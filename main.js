@@ -21,14 +21,13 @@ renderer.localClippingEnabled = true;
 document.body.appendChild(renderer.domElement);
 
 
-const controls = new FlyControls(camera, renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping  = true;
+controls.dampingFactor  = 0.05;
+controls.minDistance    = 0.1;
+controls.target.set(1.61, -2.56, -0.25);
+controls.update();
 
-controls.movementSpeed = 5.0; 
-controls.rollSpeed = Math.PI / 6; 
-controls.autoForward = false;
-controls.dragToLook = true;
-
-const clock = new THREE.Clock();
 
 
 controls.addEventListener('end', () => {
@@ -186,8 +185,7 @@ const _capTarget = new THREE.Vector3();
 function animate() {
     requestAnimationFrame(animate);
 
-    const delta = clock.getDelta();
-    controls.update(delta);
+     controls.update();
 
     roofCutPlane.coplanarPoint(capMesh.position);
     _capTarget.copy(capMesh.position).sub(roofCutPlane.normal);
