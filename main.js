@@ -12,7 +12,7 @@ const camera = new THREE.PerspectiveCamera(
     1000 
 );
 
-camera.position.set(1.64, -0.78, -0.32);
+camera.position.set(0, 10, 5);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -25,7 +25,7 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.05;
 controls.minDistance = 0.1; 
 
-controls.target.set(1.61, -2.56, -0.25);
+controls.target.set(0, -2.5, 0);
 controls.update(); 
 
 controls.addEventListener('end', () => {
@@ -51,7 +51,7 @@ mtlLoader.load(
     './model.mtl', 
     (materials) => {
         materials.preload(); 
-
+        
         const objLoader = new OBJLoader();
         objLoader.setMaterials(materials); 
 
@@ -60,10 +60,11 @@ mtlLoader.load(
             (obj) => {
                 obj.traverse((child) => {
                     if (child.isMesh) {
-                        child.material.clippingPlanes = [roofCutPlane]; 
-                        child.material.clipShadows = true; 
-                        child.material.side = THREE.DoubleSide; 
-                    }
+    child.material.clippingPlanes = [roofCutPlane];
+    child.material.clipShadows = true;
+    child.material.side = THREE.DoubleSide; 
+    child.material.wireframe = true; // Turns the cave into an x-ray hologram!
+}
                 });
 
                 scene.add(obj);
@@ -77,6 +78,34 @@ mtlLoader.load(
     (xhr) => console.log((xhr.loaded / xhr.total * 100) + '% loaded MTL'),
     (error) => console.error("Error loading MTL:", error)
 );
+
+// ==========================================
+// PHASE 4: RIVER NAVIGATION SPLINE
+// ==========================================
+
+// 1. Define the "breadcrumbs" (control points)
+const riverPoints = [
+    new THREE.Vector3(2.0, 1, 2.5),  // Far left
+    new THREE.Vector3(-2.0, 1, 2.5),  
+    new THREE.Vector3( 0.0, 1, 2.5),  // Dead center of the red scribble
+    new THREE.Vector3( 2.0, 1, 2.5),  
+    new THREE.Vector3( 4.0, 1, 2.5)   // Far right
+];
+
+// 2. Create the smooth mathematical curve
+const riverCurve = new THREE.CatmullRomCurve3(riverPoints);
+
+// 3. Make the invisible math visible for debugging!
+// (Draws a glowing cyan tube around the path)
+const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
+const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false });
+const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
+scene.add(visiblePath);
+
+// ==========================================
+
+
+
 
 
 window.addEventListener('resize', () => {
