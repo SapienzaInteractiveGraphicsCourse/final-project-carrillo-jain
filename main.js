@@ -78,23 +78,52 @@ mtlLoader.load(
     (xhr) => console.log((xhr.loaded / xhr.total * 100) + '% loaded MTL'),
     (error) => console.error("Error loading MTL:", error)
 );
+// ==========================================
+// THE WATER PLANE
+// ==========================================
+const waterGeometry = new THREE.PlaneGeometry(40, 40); 
+const waterMaterial = new THREE.MeshStandardMaterial({ 
+    color: 0x00aaaa,       
+    transparent: true, 
+    opacity: 0.6,          
+    side: THREE.DoubleSide
+});
+const water = new THREE.Mesh(waterGeometry, waterMaterial);
+
+// NO rotation needed! Because Z is your up/down axis, 
+// the default plane is perfectly flat to your cave floor.
+
+// Center it (X=0, Y=0) and set the height (Z) to -1.0
+water.position.set(0, 0, -1.0); 
+
+scene.add(water);
+// ==========================================
+// ==========================================
+// ==========================================
+
 
 // ==========================================
 // PHASE 4: RIVER NAVIGATION SPLINE
 // ==========================================
+const riverPoints = [ 
+    // --- THE CYAN S-CURVE (GOING IN) ---
+    new THREE.Vector3( -1.2,   3.0, -1.0),  
+    new THREE.Vector3( -0.6,   0.0, -1.0),  
+    new THREE.Vector3( -1.9,  -3.5, -1.0),  
+    new THREE.Vector3( -0.6,  -7.0, -1.0),  
+    new THREE.Vector3( -0.9, -10.0, -1.0),  // <-- Pulled right to thin the top
 
-// 1. Define the "breadcrumbs" (control points)
-const riverPoints = [
-    new THREE.Vector3(2.0, 1, 2.5),  // Far left
-    new THREE.Vector3(-2.0, 1, 2.5),  
-    new THREE.Vector3( 0.0, 1, 2.5),  // Dead center of the red scribble
-    new THREE.Vector3( 2.0, 1, 2.5),  
-    new THREE.Vector3( 4.0, 1, 2.5)   // Far right
+    // --- THE TIGHTER TURNAROUND ---
+    new THREE.Vector3( -0.7, -11.0, -1.0),  // <-- Narrower U-Turn
+
+    // --- THE RED STRAIGHT LINE (COMING OUT) ---
+    new THREE.Vector3( -0.5, -10.0, -1.0),  // <-- Pulled left to thin the top
+    new THREE.Vector3( -0.5,  -3.5, -1.0),  
+    new THREE.Vector3( -0.5,   3.0, -1.0)   
 ];
 
-// 2. Create the smooth mathematical curve
-const riverCurve = new THREE.CatmullRomCurve3(riverPoints);
-
+// Ensure it is false so the ends stay open!
+const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
 // 3. Make the invisible math visible for debugging!
 // (Draws a glowing cyan tube around the path)
 const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
@@ -102,10 +131,7 @@ const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: f
 const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
 scene.add(visiblePath);
 
-// ==========================================
-
-
-
+// ========================================
 
 
 window.addEventListener('resize', () => {
