@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
+import * as TWEEN from 'three/addons/libs/tween.module.js';
+import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 
 // =============================================================================
 // SCENE / CAMERA / RENDERER
@@ -393,6 +395,26 @@ const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: f
 const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
 scene.add(visiblePath);
 
+// 4. Create the Boat (A simple box with a pointed front)
+const boatGroup = new THREE.Group();
+
+// The Hull (Box)
+const hullMat = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.8 });
+const hull = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.8), hullMat);
+hull.position.y = 0.1; // Lift slightly above water
+boatGroup.add(hull);
+
+// The Bow (Pointy front so we know it's facing the right way)
+const bow = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.4, 4), hullMat);
+bow.rotation.x = -Math.PI / 2; // Point it forward
+bow.position.set(0, 0.1, -0.6); // Attach to the front of the hull
+boatGroup.add(bow);
+
+scene.add(boatGroup);
+
+// 5. A variable to track how far along the river the boat is (from 0.0 to 1.0)
+let boatProgress = 0;
+
 // ========================================
 
 
@@ -404,6 +426,105 @@ window.addEventListener('resize', () => {
 
 const clock = new THREE.Clock();
 const _capTarget = new THREE.Vector3();
+
+// ==========================================
+// PHASE 5: PROCEDURAL HIERARCHICAL BAT
+// ==========================================
+
+// 1. Materials for the bat
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.8 });
+const wingMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9, side: THREE.DoubleSide });
+
+// 2. The Root Node (Moves the entire bat through the cave)
+const batRoot = new THREE.Group();
+batRoot.position.set(0, 0, 3); // Back up to the ceiling!
+scene.add(batRoot);
+
+// 3. The Torso
+const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.2, 0.6, 4, 8), bodyMat);
+// Lay it flat for flying
+torso.rotation.x = Math.PI / 2; 
+batRoot.add(torso);
+
+// --- LEFT WING HIERARCHY ---
+// 4a. Left Shoulder Pivot
+const leftShoulder = new THREE.Group();
+leftShoulder.position.set(0.2, 0, 0); // Attach to right side of torso
+batRoot.add(leftShoulder);
+
+// 4b. Left Inner Wing
+const leftInnerWing = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.6), wingMat);
+leftInnerWing.position.set(0.5, 0, 0); // Shift so the edge is on the pivot
+leftShoulder.add(leftInnerWing);
+
+// 4c. Left Elbow Pivot
+const leftElbow = new THREE.Group();
+leftElbow.position.set(0.5, 0, 0); // Attach to the end of the inner wing
+leftInnerWing.add(leftElbow);
+
+// 4d. Left Outer Wing
+const leftOuterWing = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.4), wingMat);
+leftOuterWing.position.set(0.6, 0, 0); // Shift from the elbow
+leftElbow.add(leftOuterWing);
+
+
+// --- RIGHT WING HIERARCHY ---
+// 5a. Right Shoulder Pivot
+const rightShoulder = new THREE.Group();
+rightShoulder.position.set(-0.2, 0, 0); 
+batRoot.add(rightShoulder);
+
+// 5b. Right Inner Wing
+const rightInnerWing = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.6), wingMat);
+rightInnerWing.position.set(-0.5, 0, 0); 
+rightShoulder.add(rightInnerWing);
+
+// 5c. Right Elbow Pivot
+const rightElbow = new THREE.Group();
+rightElbow.position.set(-0.5, 0, 0); 
+rightInnerWing.add(rightElbow);
+
+// 5d. Right Outer Wing
+const rightOuterWing = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.4), wingMat);
+rightOuterWing.position.set(-0.6, 0, 0); 
+rightElbow.add(rightOuterWing);
+
+// --- PHASE 5: TWEEN.JS MACROSCOPIC FLIGHT PATH ---
+// Create three waypoints near the ceiling for the bat to fly between
+const point1 = { x: 4, y: 5, z: 3.5 };
+const point2 = { x: -4, y: 8, z: 4.0 };
+const point3 = { x: 0, y: 0, z: 3.0 };
+
+// Create the animations (4000ms = 4 seconds per leg of the trip)
+const tween1 = new TWEEN.Tween(batRoot.position).to(point1, 4000).easing(TWEEN.Easing.Quadratic.InOut);
+const tween2 = new TWEEN.Tween(batRoot.position).to(point2, 4000).easing(TWEEN.Easing.Quadratic.InOut);
+const tween3 = new TWEEN.Tween(batRoot.position).to(point3, 4000).easing(TWEEN.Easing.Quadratic.InOut);
+
+// To avoid Gimbal Lock (as requested in your project plan), we tell the bat 
+// to look at its next destination right as it starts flying there!
+tween1.onStart(() => batRoot.lookAt(point1.x, point1.y, point1.z));
+tween2.onStart(() => batRoot.lookAt(point2.x, point2.y, point2.z));
+tween3.onStart(() => batRoot.lookAt(point3.x, point3.y, point3.z));
+
+// Chain them together so it loops forever
+tween1.chain(tween2);
+tween2.chain(tween3);
+tween3.chain(tween1);
+
+// Start the flight!
+tween1.start();
+
+// --- PHASE 7: USER INTERFACE ---
+const params = {
+    boatSpeed: 0.05,
+    flapSpeed: 15.0,
+    torchIntensity: 10.0
+};
+
+const gui = new GUI();
+gui.add(params, 'boatSpeed', 0, 0.2).name('Boat Speed');
+gui.add(params, 'flapSpeed', 0, 30).name('Bat Flap Speed');
+gui.add(params, 'torchIntensity', 0, 20).name('Torch Brightness');
 
 function animate() {
     requestAnimationFrame(animate);
@@ -443,8 +564,104 @@ function animate() {
     updateHud(now);
     maybeLogPosition();
 
+    // --- PHASE 4: BOAT NAVIGATION MATH ---
+    // 1. Move the progress forward slightly based on time
+    // --- PHASE 4: BOAT NAVIGATION MATH ---
+    // 1. Move progress forward slightly based on time
+
+    boatProgress += dt * params.boatSpeed;
+    if (boatProgress >= 1.0) boatProgress = 0.0;
+
+    // 2. Get exact position and tangent from the cyan curve
+    const currentPos = riverCurve.getPointAt(boatProgress);
+    const currentTangent = riverCurve.getTangentAt(boatProgress).normalize();
+
+    // 3. Set the boat's position to the curve
+    boatGroup.position.copy(currentPos);
+
+    // 4. FIX THE FLIPPING: Tell the boat that Z is the sky!
+    boatGroup.up.set(0, 0, 1); 
+
+    // 5. Look slightly ahead
+    const lookTarget = currentPos.clone().add(currentTangent);
+    boatGroup.lookAt(lookTarget);
+
+    // 6. BUOYANCY: Shared Mathematical Syncing
+    const timeSec = now * 0.001; 
+    // Calculate wave height (Using X and Y because the river is flat on the XY plane)
+    const waveHeave = 
+        Math.sin(currentPos.x * 2.0 + timeSec * 1.5) * 0.05 + 
+        Math.sin(currentPos.y * 1.5 + timeSec * 2.0) * 0.05;
+    
+    // OVERRIDE the Z position (height) to bob up and down
+    boatGroup.position.z = currentPos.z + waveHeave;
+
+    // Apply local pitch and roll so it doesn't fight the steering
+    boatGroup.rotateX(Math.cos(timeSec * 2.0) * 0.05); // Pitch (front-to-back)
+    boatGroup.rotateZ(Math.sin(timeSec * 1.5) * 0.05); // Roll (side-to-side)
+    // -------------------------------------
+
+    // --- PHASE 5: BAT WING KINEMATICS ---
+    // The variables from your mathematical formulas
+   
+    const flapAmp = 0.6;        // How high the shoulders lift (A_flap)
+    const phaseOffset = 1.2;    // The delay for the elbow whip (φ_offset)
+    
+    // We use the same time variable from your boat waves!
+    
+    // 1. Inner Wings (Shoulders)
+    const innerAngle = Math.sin(timeSec * params.flapSpeed) * flapAmp;
+    leftShoulder.rotation.y = innerAngle;
+    rightShoulder.rotation.y = -innerAngle; // Negative so it mirrors the left side
+
+    // 2. Outer Wings (Elbows) - Notice the "- phaseOffset" delaying the sine wave!
+   const outerAngle = Math.sin(timeSec * params.flapSpeed - phaseOffset) * (flapAmp * 1.5);
+   leftElbow.rotation.y = outerAngle; 
+   rightElbow.rotation.y = -outerAngle;
+    // ------------------------------------
+ // --- PHASE 6: STOCHASTIC THERMODYNAMICS (TORCH FLICKER) ---
+    // The base intensity and maximum allowed variance from your documentation
+    
+    const intensityVariance = 4.0;
+    
+    // We need a simple, fast noise generator since we can't use complex Perlin here.
+    // A high-frequency sine wave multiplied by a chaotic prime number works great.
+    const pseudoNoise = Math.sin(timeSec * 43.19) * Math.cos(timeSec * 37.81);
+
+    // Loop through every torch in the cave
+    torches.forEach((torch, index) => {
+        // Give each torch a slightly different time offset so they don't blink in unison
+        const localTime = timeSec + (index * 1.5);
+        
+        // 1. Calculate Intensity using the specific superposition formula:
+        // I(t) = I_base + I_variance * ( a*sin(w1*t) + b*sin(w2*t) + c*Noise(t) )
+        const flutter = 
+            (0.4 * Math.sin(localTime * 2.1)) +   // Slow breath
+            (0.3 * Math.sin(localTime * 3.7)) +  // Mid breath
+            (0.3 * pseudoNoise);                 // Sharp stutter
+            
+        torch.intensity = params.torchIntensity + (intensityVariance * flutter);
+        
+        // 2. Spatial Jitter (Makes the cast shadows dance on the walls)
+        // We only jitter X and Z slightly, as the flame stays mostly anchored
+        const startX = torch.userData.startX || torch.position.x;
+        const startZ = torch.userData.startZ || torch.position.z;
+        
+        // Save the starting positions the first time this runs
+        if (!torch.userData.startX) {
+            torch.userData.startX = startX;
+            torch.userData.startZ = startZ;
+        }
+
+        torch.position.x = startX + (Math.sin(localTime * 15.0) * 0.02);
+        torch.position.z = startZ + (Math.cos(localTime * 17.0) * 0.02);
+    });
+    // --------------------------------------------------------
+
     renderer.render(scene, camera);
+    TWEEN.update();
     tickFps(now);
+    
 }
 
 animate();
