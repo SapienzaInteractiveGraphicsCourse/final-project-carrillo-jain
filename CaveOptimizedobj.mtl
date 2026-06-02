@@ -1,12 +1,11 @@
-# Blender 4.2.1 LTS MTL File: 'None'
-# www.blender.org
-
+# Cave material — color texture restored (model.jpg, photogrammetry atlas).
+# Keep model.jpg in the same folder as this .mtl on the server.
 newmtl model
-Ns 0.000000
-Ka 1.000000 1.000000 1.000000
+Ka 0.000000 0.000000 0.000000
+Kd 1.000000 1.000000 1.000000
 Ks 0.000000 0.000000 0.000000
 Ke 0.000000 0.000000 0.000000
 Ni 1.500000
 d 1.000000
 illum 1
-map_Kd C:/Users/chris/OneDrive/Desktop/Cave model/source/50f6038ed01a4fb6ad8af70f82334b7a.zip/model.jpg
+map_Kd model.jpg
