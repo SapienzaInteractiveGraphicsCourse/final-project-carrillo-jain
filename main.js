@@ -3,8 +3,10 @@ import { PointerLockControls } from 'three/addons/controls/PointerLockControls.j
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import * as TWEEN from 'three/addons/libs/tween.module.js';
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060a);
@@ -22,6 +24,8 @@ const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
 renderer.localClippingEnabled = true;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -188,18 +192,24 @@ function maybeLogPosition() {
     console.log(`camera.position.set(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)});`);
 }
 
-const ambientLight = new THREE.AmbientLight(0xffffff, 0.08);
+
+const ambientLight = new THREE.AmbientLight(0x3a4658, 0.18);
 scene.add(ambientLight);
+
+const hemiLight = new THREE.HemisphereLight(0x4a5a72, 0x1a120c, 0.25);
+hemiLight.position.set(0, 0, 5);   // +Z is up in this scene
+scene.add(hemiLight);
 
 function createTorch(position, { intensity = 10, color = 0xffaa44, castShadow = false } = {}) {
     const light = new THREE.PointLight(color, intensity, 25, 2);
     light.position.copy(position);
     light.castShadow = castShadow;
     if (castShadow) {
-        light.shadow.bias           = -0.002;
-        light.shadow.normalBias     =  0.02;
-        light.shadow.mapSize.width  =  512;
-        light.shadow.mapSize.height =  512;
+        light.shadow.bias           = -0.0015;
+        light.shadow.normalBias     =  0.03;
+        light.shadow.radius         =  3;       // soften the edge (PCFSoft)
+        light.shadow.mapSize.width  =  1024;
+        light.shadow.mapSize.height =  1024;
         light.shadow.camera.near    =  0.5;
         light.shadow.camera.far     =  25;
     }
@@ -278,13 +288,13 @@ function upgradeToStandard(oldMat) {
 
 const mtlLoader = new MTLLoader();
 mtlLoader.load(
-    './CaveOptimizedobj.mtl',
+    './models/CaveOptimizedobj.mtl',
     (materials) => {
         materials.preload();
         const objLoader = new OBJLoader();
         objLoader.setMaterials(materials);
         objLoader.load(
-            './CaveOptimizedobj.obj',
+            './models/CaveOptimizedobj.obj',
             (obj) => {
                 obj.traverse((child) => {
                     if (!child.isMesh) return;
@@ -336,6 +346,7 @@ const MAX_WATER_LIGHTS = 8;
 const waterUniforms = {
     uTime:           { value: 0 },
     uAmpScale:       { value: 1.0 },
+    uExposure:       { value: 1.15 },   // keep in sync with renderer.toneMappingExposure
     uBaseColor:      { value: new THREE.Color(0x1f6f7a) },
     uAmbient:        { value: new THREE.Color(0x202830) },
     uOpacity:        { value: 0.72 },
@@ -395,6 +406,7 @@ const waterFragment = `
     uniform vec3  uBaseColor;
     uniform vec3  uAmbient;
     uniform float uOpacity;
+    uniform float uExposure;
     uniform int   uLightCount;
     uniform vec3  uLightPos[MAXL];
     uniform vec3  uLightColor[MAXL];
@@ -402,6 +414,17 @@ const waterFragment = `
 
     varying vec3 vWorldPos;
     varying vec3 vNormal;
+
+    // Match the renderer's ACESFilmicToneMapping + sRGB output so the water
+    // sits in the same tonal range as the tone-mapped cave around it.
+    vec3 acesFilmic(vec3 x) {
+        const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+        return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
+    }
+    vec3 linearToSRGB(vec3 c) {
+        return mix(1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055,
+                   c * 12.92, step(c, vec3(0.0031308)));
+    }
 
     void main() {
         vec3 N = normalize(vNormal);
@@ -427,6 +450,8 @@ const waterFragment = `
         float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
         color += uBaseColor * fres * 0.25;
 
+        color = acesFilmic(color * uExposure);
+        color = linearToSRGB(color);
         gl_FragColor = vec4(color, uOpacity);
     }
 `;
@@ -437,6 +462,7 @@ const waterMaterial = new THREE.ShaderMaterial({
     vertexShader: waterVertex,
     fragmentShader: waterFragment,
     transparent: true,
+    toneMapped: false,   // we tone-map + sRGB-encode inside the fragment shader
     side: THREE.DoubleSide,
 });
 const water = new THREE.Mesh(waterGeometry, waterMaterial);
@@ -466,19 +492,93 @@ const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: f
 const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
 scene.add(visiblePath);
 
+// Hide the cyan debug tube that marks the river path (set true to show it again).
+visiblePath.visible = false;
+
 const boatGroup = new THREE.Group();
-
-const hullMat = new THREE.MeshStandardMaterial({ color: 0x8b4513, roughness: 0.8 });
-const hull = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.2, 0.8), hullMat);
-hull.position.y = 0.1;
-boatGroup.add(hull);
-
-const bow = new THREE.Mesh(new THREE.ConeGeometry(0.2, 0.4, 4), hullMat);
-bow.rotation.x = -Math.PI / 2;
-bow.position.set(0, 0.1, -0.6);
-boatGroup.add(bow);
-
 scene.add(boatGroup);
+
+// --- Real rowboat model (replaces the old box-and-cone placeholder) ---
+// In boatGroup local space the boat travels along -Z (bow) with +Y up, matching
+// the path-following + wave-bobbing code in animate().
+const BOAT_LENGTH  = 1.1;            // target length in world units (FBX ships in cm)
+const BOAT_HEADING = Math.PI;        // yaw so the FBX's +Z bow points along -Z travel
+// The oar geometry's long axis is the oar's local +X (the shaft), so the old
+// approach of rotating about local X just twisted each oar around its own length
+// (feathering) instead of sweeping it. Instead we sweep each oar about WORLD up
+// through its own pivot, which the FBX places near the inboard/oarlock end. That
+// reads as rowing regardless of the boat's heading or wave tilt.
+const WORLD_UP   = new THREE.Vector3(0, 0, 1);  // +Z is up in this scene
+const OAR_L_SIGN = +1;
+const OAR_R_SIGN = -1;               // mirrored oar -> opposite sign = blades sweep together
+const _oarQ      = new THREE.Quaternion();      // scratch, reused each frame
+const _oarLiftQ  = new THREE.Quaternion();
+const _oarAxis   = new THREE.Vector3();          // sweep axis in parent-local space
+const _oarLiftAxis = new THREE.Vector3();        // lift axis in parent-local space
+const _oarParentQ  = new THREE.Quaternion();
+const _oarParentInv = new THREE.Quaternion();
+const _oarOutboard  = new THREE.Vector3();
+
+const oars    = { L: null, R: null };
+const oarRest = new WeakMap();       // oar node -> rest quaternion
+
+const fbxLoader = new FBXLoader();
+fbxLoader.load(
+    './models/Old_Rowboat_low.fbx',
+    (boat) => {
+        boat.rotation.y = BOAT_HEADING;
+        boat.updateMatrixWorld(true);
+
+        // Auto-scale from the bounding box to the target length, then recenter.
+        let box = new THREE.Box3().setFromObject(boat);
+        const size = box.getSize(new THREE.Vector3());
+        const longest = Math.max(size.x, size.z) || 1;
+        boat.scale.multiplyScalar(BOAT_LENGTH / longest);
+        boat.updateMatrixWorld(true);
+        box = new THREE.Box3().setFromObject(boat);
+        boat.position.sub(box.getCenter(new THREE.Vector3()));
+
+        // This FBX ships with its own baked-in PointLight ("Light") and a Camera.
+        // The old mesh-only traverse left them in, so the point light got added to
+        // the scene and rode along the river as a stray moving light. Remove any
+        // lights/cameras the model carries.
+        const junk = [];
+        boat.traverse((child) => {
+            if (child.isLight || child.isCamera) junk.push(child);
+        });
+        junk.forEach((n) => n.parent && n.parent.remove(n));
+        if (junk.length) console.log('Rowboat: stripped baked',
+            junk.map((n) => n.type).join(', '));
+
+        // Rebuild materials as MeshStandard so the boat lights like the cave; keep
+        // any baked color map, otherwise fall back to a wood tone.
+        boat.traverse((child) => {
+            if (!child.isMesh) return;
+            child.castShadow = true;
+            child.receiveShadow = true;
+            const src = Array.isArray(child.material) ? child.material[0] : child.material;
+            const tex = src && src.map ? src.map : null;
+            if (tex) tex.colorSpace = THREE.SRGBColorSpace;
+            child.material = new THREE.MeshStandardMaterial({
+                color: tex ? 0xffffff : 0x6b4a2f,
+                map: tex,
+                roughness: 0.85, metalness: 0.05,
+                clippingPlanes: [roofCutPlane], clipShadows: true,
+            });
+        });
+
+        boatGroup.add(boat);
+
+        // Grab the oar nodes (named Oar_L / Oar_R in the FBX) and store their rest pose.
+        oars.L = findBone(boat, 'Oar_L');
+        oars.R = findBone(boat, 'Oar_R');
+        for (const o of [oars.L, oars.R]) if (o) oarRest.set(o, o.quaternion.clone());
+        console.log('Rowboat loaded. Oars found:',
+            [oars.L && 'L', oars.R && 'R'].filter(Boolean).join(', ') || 'none');
+    },
+    undefined,
+    (err) => console.error('Error loading rowboat FBX:', err)
+);
 
 let boatProgress = 0;
 
@@ -492,12 +592,14 @@ const clock = new THREE.Clock();
 const _capTarget = new THREE.Vector3();
 
 const batRoot = new THREE.Group();
-batRoot.position.set(0, 0, 3);
+batRoot.position.set(0, -3, 0);
 scene.add(batRoot);
 
-const BAT_WINGSPAN = 4.0;                        
-const FLAP_AXIS = new THREE.Vector3(1, 0, 0);   
-const _flapQ = new THREE.Quaternion();           
+// --- Imported bat model: geometry only. The GLB's bundled clip was stripped;
+//     the flapping below is our own JS driving the model's skeleton bones. ---
+const BAT_WINGSPAN = 2.5;                        // target wingspan in world units
+const FLAP_AXIS = new THREE.Vector3(1, 0, 0);    // bone-local flap axis (head-tail axis)
+const _flapQ = new THREE.Quaternion();           // scratch, reused each frame
 
 // bones we drive ourselves once the model has loaded
 const batBones = { armL: null, armR: null, wingL: null, wingR: null };
@@ -514,15 +616,18 @@ function findBone(root, targetName) {
 
 const gltfLoader = new GLTFLoader();
 gltfLoader.load(
-    './bat.glb',
+    './models/bat.glb',
     (gltf) => {
         const model = gltf.scene;
 
+        // Native pose: head = +X, up = +Y, wings span Z.
+        // batRoot.lookAt() aims +Z at the travel target, so yaw the head +X -> +Z.
         model.rotation.y = -Math.PI / 2;
 
+        // Scale to the target wingspan, then recenter the body on batRoot's origin
         model.updateMatrixWorld(true);
         let box = new THREE.Box3().setFromObject(model);
-        const span = box.getSize(new THREE.Vector3()).x || 1;   
+        const span = box.getSize(new THREE.Vector3()).x || 1;   // wingspan after yaw
         model.scale.setScalar(BAT_WINGSPAN / span);
         model.updateMatrixWorld(true);
         box = new THREE.Box3().setFromObject(model);
@@ -533,13 +638,14 @@ gltfLoader.load(
             child.castShadow = true;
             child.receiveShadow = true;
             if (child.material) {
-                child.material.side = THREE.DoubleSide;   
+                child.material.side = THREE.DoubleSide;   // thin wing membranes
                 child.material.shadowSide = THREE.FrontSide;
             }
         });
 
         batRoot.add(model);
 
+        // Grab the bones we animate and remember their rest orientation
         batBones.armL  = findBone(model, 'arm1.L_Armature');
         batBones.armR  = findBone(model, 'arm1.R_Armature');
         batBones.wingL = findBone(model, 'wing1.L_Armature');
@@ -554,9 +660,9 @@ gltfLoader.load(
     (err) => console.error('Error loading bat.glb:', err)
 );
 
-const point1 = { x: 4, y: 5, z: 3.5 };
-const point2 = { x: -4, y: 8, z: 4.0 };
-const point3 = { x: 0, y: 0, z: 3.0 };
+const point1 = { x: -2.0, y: -3.8, z:  0.6 };
+const point2 = { x:  1.8, y: -2.4, z: -0.2 };
+const point3 = { x:  0.0, y: -3.0, z:  0.0 };
 
 const tween1 = new TWEEN.Tween(batRoot.position).to(point1, 4000).easing(TWEEN.Easing.Quadratic.InOut);
 const tween2 = new TWEEN.Tween(batRoot.position).to(point2, 4000).easing(TWEEN.Easing.Quadratic.InOut);
@@ -574,15 +680,21 @@ tween1.start();
 
 const params = {
     boatSpeed: 0.05,
+    oarSpeed: 2.5,
+    oarAmplitude: 0.4,
+    oarLift: 0.18,
     flapSpeed: 15.0,
-    torchIntensity: 10.0,
+    torchIntensity: 14.0,
     waveAmplitude: 1.0
 };
 
 const gui = new GUI();
 gui.add(params, 'boatSpeed', 0, 0.2).name('Boat Speed');
+gui.add(params, 'oarSpeed', 0, 8).name('Oar Speed');
+gui.add(params, 'oarAmplitude', 0, 1.2).name('Oar Swing');
+gui.add(params, 'oarLift', 0, 0.6).name('Oar Lift');
 gui.add(params, 'flapSpeed', 0, 30).name('Bat Flap Speed');
-gui.add(params, 'torchIntensity', 0, 20).name('Torch Brightness');
+gui.add(params, 'torchIntensity', 0, 30).name('Torch Brightness');
 gui.add(params, 'waveAmplitude', 0, 3).name('Wave Amplitude');
 
 function animate() {
@@ -664,6 +776,42 @@ function animate() {
     boatGroup.rotateX(pitch);
     boatGroup.rotateZ(roll);
 
+    const oarPhase = timeSec * params.oarSpeed;
+    const sweep = Math.sin(oarPhase) * params.oarAmplitude;
+    const lift  = Math.cos(oarPhase) * params.oarLift;
+
+    const rowOar = (oar, sweepSign, bladeSignX) => {
+        const rest = oarRest.get(oar);
+        if (!rest) return;
+
+        oar.parent.getWorldQuaternion(_oarParentQ);
+        _oarParentInv.copy(_oarParentQ).invert();
+
+        // horizontal sweep about world up, expressed in the parent's local frame
+        _oarAxis.copy(WORLD_UP).applyQuaternion(_oarParentInv).normalize();
+        _oarQ.setFromAxisAngle(_oarAxis, sweep * sweepSign);
+
+      
+        _oarOutboard.set(bladeSignX, 0, 0)   // pivot -> blade, in oar-local space
+            .applyQuaternion(rest)           // -> parent-local
+            .applyQuaternion(_oarParentQ);   // -> world
+        _oarOutboard.z = 0;
+        if (_oarOutboard.lengthSq() > 1e-6) {
+            _oarOutboard.normalize();
+            _oarLiftAxis.set(_oarOutboard.y, -_oarOutboard.x, 0)
+                .applyQuaternion(_oarParentInv).normalize();
+            _oarLiftQ.setFromAxisAngle(_oarLiftAxis, lift);
+        } else {
+            _oarLiftQ.identity();
+        }
+
+        // world orientation = parent * (lift * sweep * rest)
+        oar.quaternion.copy(rest).premultiply(_oarQ).premultiply(_oarLiftQ);
+    };
+    if (oars.L) rowOar(oars.L, OAR_L_SIGN, -1);   // left blade at local -X
+    if (oars.R) rowOar(oars.R, OAR_R_SIGN, +1);   // right blade at local +X
+
+    // --- Our own flapping animation, driving the imported skeleton's bones ---
     const flapAmp = 0.5;
     const phaseOffset = 1.2;
 
@@ -677,10 +825,10 @@ function animate() {
         bone.quaternion.copy(rest).multiply(_flapQ);
     };
     if (batBones.armL) {
-        flapBone(batBones.armL,  innerAngle, +1);   
-        flapBone(batBones.armR,  innerAngle, -1);  
-        flapBone(batBones.wingL, outerAngle, +1);  
-        flapBone(batBones.wingR, outerAngle, -1);
+        flapBone(batBones.armL,  innerAngle, +1);   // upper arm = primary flap
+        flapBone(batBones.armR,  innerAngle, +1);   // mirrored bone -> same sign = beats together
+        flapBone(batBones.wingL, outerAngle, +1);   // outer wing = phase-lagged tip
+        flapBone(batBones.wingR, outerAngle, +1);
     }
 
     const intensityVariance = 4.0;
