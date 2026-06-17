@@ -1,1 +1,11 @@
-*.obj filter=lfs diff=lfs merge=lfs -text
+# 3D model & geometry files — tracked via Git LFS to prevent partial-sync truncation
+*.obj  filter=lfs diff=lfs merge=lfs -text
+*.glb  filter=lfs diff=lfs merge=lfs -text
+*.gltf filter=lfs diff=lfs merge=lfs -text
+*.bin  filter=lfs diff=lfs merge=lfs -text
+*.fbx  filter=lfs diff=lfs merge=lfs -text
+
+# Large texture maps
+*.png  filter=lfs diff=lfs merge=lfs -text
+*.jpg  filter=lfs diff=lfs merge=lfs -text
+*.jpeg filter=lfs diff=lfs merge=lfs -text

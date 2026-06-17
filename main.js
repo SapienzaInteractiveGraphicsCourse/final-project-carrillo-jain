@@ -502,7 +502,8 @@ scene.add(boatGroup);
 // In boatGroup local space the boat travels along -Z (bow) with +Y up, matching
 // the path-following + wave-bobbing code in animate().
 const BOAT_LENGTH  = 1.1;            // target length in world units (FBX ships in cm)
-const BOAT_HEADING = Math.PI;        // yaw so the FBX's +Z bow points along -Z travel
+const BOAT_HEADING = 0;              // yaw so the bow points along -Z travel (FBX bow is at -Z)
+const BOAT_FLOAT   = 0.12;           // lift the hull so it rides ON the water, not half-submerged (tune)
 // The oar geometry's long axis is the oar's local +X (the shaft), so the old
 // approach of rotating about local X just twisted each oar around its own length
 // (feathering) instead of sweeping it. Instead we sweep each oar about WORLD up
@@ -580,6 +581,160 @@ fbxLoader.load(
     (err) => console.error('Error loading rowboat FBX:', err)
 );
 
+
+const CAPT_HEIGHT  = 0.62;        // target standing height in world units
+const CAPT_HEADING = Math.PI;     // yaw; faces the stern (back to bow) like a real rower
+const CAPT_SEAT    = new THREE.Vector3(0, 0.05, 0.04);    // pelvis position in boat-local space (tune Y for seat height)
+const CAPT_HAND_LIFT = 0.05;      // raise the hand IK target (boat-local up) so hands sit at chest height
+
+const CAPT_ARM_AXIS    = new THREE.Vector3(1, 0, 0);     // upper-arm + elbow swing axis (bone-local)
+const CAPT_ARM_LOWER   = 0.85;   // base: drop the upper arms down out of the T-pose (rad)
+const CAPT_ELBOW_BEND  = 1.15;   // base: bend the elbows so the forearms come forward (rad)
+const CAPT_THIGH_BEND  = 1.45;   // swing thighs forward (rad)
+const CAPT_KNEE_BEND   = -1.5;   // bend knees down (rad)
+const CAPT_LEG_SPREAD  = 0.5;    // open the knees outward so hands reach the oars (rad)
+const CAPT_SPREAD_AXIS = new THREE.Vector3(0, 0, 1);   // bone-local Z: thigh abduction
+const _captQ = new THREE.Quaternion();                    // scratch, reused each frame
+
+const captGroup = new THREE.Group();
+boatGroup.add(captGroup);
+
+const captBones = { armL: null, foreL: null, handL: null, armR: null, foreR: null, handR: null };
+const captRest  = new WeakMap();  // bone -> rest quaternion
+let captArmLen = 0, captForeLen = 0;   // world-space upper-arm and forearm lengths (set on load)
+
+// --- 2-bone IK: drive the captain's hands onto the moving oar handles. Because the
+//     oars already row in a circle, his arms inherit that motion in sync. ---
+const _ikUp = new THREE.Vector3(0, 1, 0);
+const _ikS = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikN = new THREE.Vector3();
+const _ikPerp = new THREE.Vector3(), _ikDir = new THREE.Vector3(), _ikHandle = new THREE.Vector3();
+const _ikLift = new THREE.Vector3(), _ikTgt = new THREE.Vector3(), _ikUpW = new THREE.Vector3();
+const _ikW = new THREE.Quaternion(), _ikPW = new THREE.Quaternion();
+const _ikBoatQ = new THREE.Quaternion();
+
+// orient `bone` so its local +Y points along worldDir (roll uncontrolled)
+function aimBoneWorld(bone, worldDir, parentWorldQuat) {
+    _ikW.setFromUnitVectors(_ikUp, worldDir);
+    bone.quaternion.copy(parentWorldQuat).invert().multiply(_ikW);
+}
+
+function solveArmIK(armBone, foreBone, target, L1, L2, refUp, elbowAngle) {
+    armBone.updateWorldMatrix(true, false);
+    armBone.getWorldPosition(_ikS);
+    _ikDir.copy(target).sub(_ikS);
+    let d = _ikDir.length();
+    const maxReach = (L1 + L2) * params.armReach;
+    d = THREE.MathUtils.clamp(d, Math.abs(L1 - L2) + 1e-3, maxReach);
+    _ikN.copy(_ikDir).normalize();
+    _ikTgt.copy(_ikS).addScaledVector(_ikN, d);   
+    const cosA = THREE.MathUtils.clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1);
+    const a = Math.acos(cosA);
+    _ikPerp.copy(refUp).addScaledVector(_ikN, -refUp.dot(_ikN));
+    if (_ikPerp.lengthSq() < 1e-6) _ikPerp.set(0, 0, 1).addScaledVector(_ikN, -_ikN.z);
+    _ikPerp.normalize().applyAxisAngle(_ikN, elbowAngle);
+    _ikE.copy(_ikS).addScaledVector(_ikN, Math.cos(a) * L1).addScaledVector(_ikPerp, Math.sin(a) * L1);
+    armBone.parent.getWorldQuaternion(_ikPW);
+    aimBoneWorld(armBone, _ikDir.copy(_ikE).sub(_ikS).normalize(), _ikPW);
+    armBone.updateWorldMatrix(false, false);
+    armBone.getWorldQuaternion(_ikPW);
+    aimBoneWorld(foreBone, _ikDir.copy(_ikTgt).sub(_ikE).normalize(), _ikPW);
+}
+
+// world position of an oar's handle (inboard end), where the hand grips
+function oarHandle(oarNode, handleSign, out) {
+    out.set(handleSign * params.oarGrip, 0, 0);
+    oarNode.updateWorldMatrix(true, false);
+    return oarNode.localToWorld(out);
+}
+
+const _gripFwd    = new THREE.Vector3();
+const _gripWorld  = new THREE.Quaternion();
+const _gripRollQ  = new THREE.Quaternion();
+const _gripParent = new THREE.Quaternion();
+function gripHand(handBone, foreBone, rollRad) {
+    if (!handBone || !foreBone) return;
+    foreBone.updateWorldMatrix(true, false);
+    foreBone.getWorldQuaternion(_gripWorld);
+    _gripFwd.set(0, 1, 0).applyQuaternion(_gripWorld).normalize();   // forearm aim, world
+    _gripWorld.setFromUnitVectors(_ikUp, _gripFwd);                  // hand +Y -> forearm dir
+    _gripRollQ.setFromAxisAngle(_ikUp, rollRad);                     // roll about hand length
+    _gripWorld.multiply(_gripRollQ);
+    handBone.parent.getWorldQuaternion(_gripParent);
+    handBone.quaternion.copy(_gripParent).invert().multiply(_gripWorld);
+}
+
+const captLoader = new GLTFLoader();   // own instance; the bat's gltfLoader is declared later
+captLoader.load(
+    './models/captain/captain-clark.gltf',
+    (gltf) => {
+        const model = gltf.scene;
+
+        model.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(model);
+        const h = box.getSize(new THREE.Vector3()).y || 1;
+        model.scale.multiplyScalar(CAPT_HEIGHT / h);
+        model.updateMatrixWorld(true);
+
+        const sitThigh = (boneName, spreadSign) => {
+            const b = findBone(model, boneName);
+            if (!b) return;
+            b.quaternion
+                .multiply(_captQ.setFromAxisAngle(CAPT_ARM_AXIS,    CAPT_THIGH_BEND))
+                .multiply(_captQ.setFromAxisAngle(CAPT_SPREAD_AXIS, CAPT_LEG_SPREAD * spreadSign));
+        };
+        const sitKnee = (boneName) => {
+            const b = findBone(model, boneName);
+            if (b) b.quaternion.multiply(_captQ.setFromAxisAngle(CAPT_ARM_AXIS, CAPT_KNEE_BEND));
+        };
+        sitThigh('mixamorig:LeftUpLeg',  -1);
+        sitThigh('mixamorig:RightUpLeg', +1);
+        sitKnee('mixamorig:LeftLeg');
+        sitKnee('mixamorig:RightLeg');
+        model.updateMatrixWorld(true);
+
+        const hips = findBone(model, 'mixamorig:Hips');
+        if (hips) model.position.sub(hips.getWorldPosition(new THREE.Vector3()));
+
+        model.traverse((child) => {
+            if (!child.isMesh) return;
+            child.castShadow = true;
+            child.receiveShadow = true;
+            child.frustumCulled = false;     
+            const apply = (mat) => {
+                if (!mat) return;
+                mat.clippingPlanes = [roofCutPlane];
+                mat.clipShadows = true;
+            };
+            Array.isArray(child.material) ? child.material.forEach(apply) : apply(child.material);
+        });
+
+        captGroup.rotation.y = CAPT_HEADING;
+        captGroup.position.copy(CAPT_SEAT);
+        captGroup.add(model);
+
+        captBones.armL  = findBone(model, 'mixamorig:LeftArm');
+        captBones.foreL = findBone(model, 'mixamorig:LeftForeArm');
+        captBones.handL = findBone(model, 'mixamorig:LeftHand');
+        captBones.armR  = findBone(model, 'mixamorig:RightArm');
+        captBones.foreR = findBone(model, 'mixamorig:RightForeArm');
+        captBones.handR = findBone(model, 'mixamorig:RightHand');
+        for (const b of Object.values(captBones)) if (b) captRest.set(b, b.quaternion.clone());
+
+        // Measure world-space arm segment lengths (T-pose) for the IK solver.
+        model.updateWorldMatrix(true, true);
+        if (captBones.armL && captBones.foreL && captBones.handL) {
+            const s = captBones.armL.getWorldPosition(new THREE.Vector3());
+            const e = captBones.foreL.getWorldPosition(new THREE.Vector3());
+            const w = captBones.handL.getWorldPosition(new THREE.Vector3());
+            captArmLen  = s.distanceTo(e);
+            captForeLen = e.distanceTo(w);
+        }
+        console.log('Captain loaded. armLen', captArmLen.toFixed(3), 'foreLen', captForeLen.toFixed(3));
+    },
+    undefined,
+    (err) => console.error('Error loading captain glTF:', err)
+);
+
 let boatProgress = 0;
 
 window.addEventListener('resize', () => {
@@ -595,8 +750,7 @@ const batRoot = new THREE.Group();
 batRoot.position.set(0, -3, 0);
 scene.add(batRoot);
 
-// --- Imported bat model: geometry only. The GLB's bundled clip was stripped;
-//     the flapping below is our own JS driving the model's skeleton bones. ---
+
 const BAT_WINGSPAN = 2.5;                        // target wingspan in world units
 const FLAP_AXIS = new THREE.Vector3(1, 0, 0);    // bone-local flap axis (head-tail axis)
 const _flapQ = new THREE.Quaternion();           // scratch, reused each frame
@@ -620,11 +774,8 @@ gltfLoader.load(
     (gltf) => {
         const model = gltf.scene;
 
-        // Native pose: head = +X, up = +Y, wings span Z.
-        // batRoot.lookAt() aims +Z at the travel target, so yaw the head +X -> +Z.
         model.rotation.y = -Math.PI / 2;
 
-        // Scale to the target wingspan, then recenter the body on batRoot's origin
         model.updateMatrixWorld(true);
         let box = new THREE.Box3().setFromObject(model);
         const span = box.getSize(new THREE.Vector3()).x || 1;   // wingspan after yaw
@@ -682,7 +833,12 @@ const params = {
     boatSpeed: 0.05,
     oarSpeed: 2.5,
     oarAmplitude: 0.4,
-    oarLift: 0.18,
+    oarLift: 0.36,          // comparable to the sweep -> the stroke traces a circle, not a flat line
+    oarGrip: 0.5,           // how far along the oar handle the captain's hands grip (IK target)
+    armReach: 1,            // fraction of full arm length he reaches -> <1 keeps elbows bent
+    elbowAngle: -138.6,     // degrees: rolls the elbows around the arm (front <-> down <-> back)
+    gripRoll: 144.72,       // degrees: rolls both palms toward the oar handle (tune for the grip)
+    seatHeight: 0.12,       // captain hip height in boat-local +Y (raise so he sits on, not through, the hull)
     flapSpeed: 15.0,
     torchIntensity: 14.0,
     waveAmplitude: 1.0
@@ -693,6 +849,11 @@ gui.add(params, 'boatSpeed', 0, 0.2).name('Boat Speed');
 gui.add(params, 'oarSpeed', 0, 8).name('Oar Speed');
 gui.add(params, 'oarAmplitude', 0, 1.2).name('Oar Swing');
 gui.add(params, 'oarLift', 0, 0.6).name('Oar Lift');
+gui.add(params, 'oarGrip', -0.2, 0.5).name('Hand Grip');
+gui.add(params, 'armReach', 0.5, 1).name('Arm Reach');
+gui.add(params, 'elbowAngle', -180, 180).name('Elbow Angle');
+gui.add(params, 'gripRoll', -180, 180).name('Hand Roll');
+gui.add(params, 'seatHeight', -0.1, 0.4).name('Seat Height');
 gui.add(params, 'flapSpeed', 0, 30).name('Bat Flap Speed');
 gui.add(params, 'torchIntensity', 0, 30).name('Torch Brightness');
 gui.add(params, 'waveAmplitude', 0, 3).name('Wave Amplitude');
@@ -769,7 +930,7 @@ function animate() {
     const hPort  = waveHeight(currentPos.x - sp, currentPos.y,      timeSec, amp);
     const hStar  = waveHeight(currentPos.x + sp, currentPos.y,      timeSec, amp);
 
-    boatGroup.position.z = currentPos.z + hC;
+    boatGroup.position.z = currentPos.z + hC + BOAT_FLOAT;
 
     const pitch = Math.atan2(hBow - hStern, 2.0 * sp);
     const roll  = Math.atan2(hPort - hStar, 2.0 * sp);
@@ -787,14 +948,14 @@ function animate() {
         oar.parent.getWorldQuaternion(_oarParentQ);
         _oarParentInv.copy(_oarParentQ).invert();
 
-        // horizontal sweep about world up, expressed in the parent's local frame
+
         _oarAxis.copy(WORLD_UP).applyQuaternion(_oarParentInv).normalize();
         _oarQ.setFromAxisAngle(_oarAxis, sweep * sweepSign);
 
       
-        _oarOutboard.set(bladeSignX, 0, 0)   // pivot -> blade, in oar-local space
-            .applyQuaternion(rest)           // -> parent-local
-            .applyQuaternion(_oarParentQ);   // -> world
+        _oarOutboard.set(bladeSignX, 0, 0)  
+            .applyQuaternion(rest)           
+            .applyQuaternion(_oarParentQ);   
         _oarOutboard.z = 0;
         if (_oarOutboard.lengthSq() > 1e-6) {
             _oarOutboard.normalize();
@@ -810,6 +971,26 @@ function animate() {
     };
     if (oars.L) rowOar(oars.L, OAR_L_SIGN, -1);   // left blade at local -X
     if (oars.R) rowOar(oars.R, OAR_R_SIGN, +1);   // right blade at local +X
+
+    captGroup.position.y = params.seatHeight;
+
+
+    if (captArmLen > 0 && (oars.L || oars.R)) {
+        boatGroup.getWorldQuaternion(_ikBoatQ);
+        _ikUpW.set(0, 1, 0).applyQuaternion(_ikBoatQ);                 // boat-up: elbow reference + hand lift
+        _ikLift.copy(_ikUpW).multiplyScalar(CAPT_HAND_LIFT);
+        const ea = THREE.MathUtils.degToRad(params.elbowAngle);
+        if (captBones.armL && captBones.foreL && oars.L) {
+            solveArmIK(captBones.armL, captBones.foreL,
+                oarHandle(oars.L, +1, _ikHandle).add(_ikLift), captArmLen, captForeLen, _ikUpW, ea);
+            gripHand(captBones.handL, captBones.foreL, THREE.MathUtils.degToRad(params.gripRoll));
+        }
+        if (captBones.armR && captBones.foreR && oars.R) {
+            solveArmIK(captBones.armR, captBones.foreR,
+                oarHandle(oars.R, -1, _ikHandle).add(_ikLift), captArmLen, captForeLen, _ikUpW, -ea);
+            gripHand(captBones.handR, captBones.foreR, THREE.MathUtils.degToRad(-params.gripRoll));
+        }
+    }
 
     // --- Our own flapping animation, driving the imported skeleton's bones ---
     const flapAmp = 0.5;
