@@ -6,6 +6,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import * as TWEEN from 'three/addons/libs/tween.module.js';
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 
 const scene = new THREE.Scene();
@@ -498,24 +499,17 @@ visiblePath.visible = false;
 const boatGroup = new THREE.Group();
 scene.add(boatGroup);
 
-// --- Real rowboat model (replaces the old box-and-cone placeholder) ---
-// In boatGroup local space the boat travels along -Z (bow) with +Y up, matching
-// the path-following + wave-bobbing code in animate().
-const BOAT_LENGTH  = 1.1;            // target length in world units (FBX ships in cm)
-const BOAT_HEADING = 0;              // yaw so the bow points along -Z travel (FBX bow is at -Z)
-const BOAT_FLOAT   = 0.12;           // lift the hull so it rides ON the water, not half-submerged (tune)
-// The oar geometry's long axis is the oar's local +X (the shaft), so the old
-// approach of rotating about local X just twisted each oar around its own length
-// (feathering) instead of sweeping it. Instead we sweep each oar about WORLD up
-// through its own pivot, which the FBX places near the inboard/oarlock end. That
-// reads as rowing regardless of the boat's heading or wave tilt.
-const WORLD_UP   = new THREE.Vector3(0, 0, 1);  // +Z is up in this scene
+
+const BOAT_LENGTH  = 1.1;           
+const BOAT_HEADING = 0;              
+const BOAT_FLOAT   = 0.12;          
+const WORLD_UP   = new THREE.Vector3(0, 0, 1);  
 const OAR_L_SIGN = +1;
-const OAR_R_SIGN = -1;               // mirrored oar -> opposite sign = blades sweep together
-const _oarQ      = new THREE.Quaternion();      // scratch, reused each frame
+const OAR_R_SIGN = -1;              
+const _oarQ      = new THREE.Quaternion();     
 const _oarLiftQ  = new THREE.Quaternion();
-const _oarAxis   = new THREE.Vector3();          // sweep axis in parent-local space
-const _oarLiftAxis = new THREE.Vector3();        // lift axis in parent-local space
+const _oarAxis   = new THREE.Vector3();          
+const _oarLiftAxis = new THREE.Vector3();        
 const _oarParentQ  = new THREE.Quaternion();
 const _oarParentInv = new THREE.Quaternion();
 const _oarOutboard  = new THREE.Vector3();
@@ -530,7 +524,6 @@ fbxLoader.load(
         boat.rotation.y = BOAT_HEADING;
         boat.updateMatrixWorld(true);
 
-        // Auto-scale from the bounding box to the target length, then recenter.
         let box = new THREE.Box3().setFromObject(boat);
         const size = box.getSize(new THREE.Vector3());
         const longest = Math.max(size.x, size.z) || 1;
@@ -539,10 +532,6 @@ fbxLoader.load(
         box = new THREE.Box3().setFromObject(boat);
         boat.position.sub(box.getCenter(new THREE.Vector3()));
 
-        // This FBX ships with its own baked-in PointLight ("Light") and a Camera.
-        // The old mesh-only traverse left them in, so the point light got added to
-        // the scene and rode along the river as a stray moving light. Remove any
-        // lights/cameras the model carries.
         const junk = [];
         boat.traverse((child) => {
             if (child.isLight || child.isCamera) junk.push(child);
@@ -551,8 +540,6 @@ fbxLoader.load(
         if (junk.length) console.log('Rowboat: stripped baked',
             junk.map((n) => n.type).join(', '));
 
-        // Rebuild materials as MeshStandard so the boat lights like the cave; keep
-        // any baked color map, otherwise fall back to a wood tone.
         boat.traverse((child) => {
             if (!child.isMesh) return;
             child.castShadow = true;
@@ -582,19 +569,19 @@ fbxLoader.load(
 );
 
 
-const CAPT_HEIGHT  = 0.62;        // target standing height in world units
-const CAPT_HEADING = Math.PI;     // yaw; faces the stern (back to bow) like a real rower
-const CAPT_SEAT    = new THREE.Vector3(0, 0.05, 0.04);    // pelvis position in boat-local space (tune Y for seat height)
-const CAPT_HAND_LIFT = 0.05;      // raise the hand IK target (boat-local up) so hands sit at chest height
+const CAPT_HEIGHT  = 0.62;        
+const CAPT_HEADING = Math.PI;     
+const CAPT_SEAT    = new THREE.Vector3(0, 0.05, 0.04);   
+const CAPT_HAND_LIFT = 0.05;      
 
-const CAPT_ARM_AXIS    = new THREE.Vector3(1, 0, 0);     // upper-arm + elbow swing axis (bone-local)
-const CAPT_ARM_LOWER   = 0.85;   // base: drop the upper arms down out of the T-pose (rad)
-const CAPT_ELBOW_BEND  = 1.15;   // base: bend the elbows so the forearms come forward (rad)
-const CAPT_THIGH_BEND  = 1.45;   // swing thighs forward (rad)
-const CAPT_KNEE_BEND   = -1.5;   // bend knees down (rad)
-const CAPT_LEG_SPREAD  = 0.5;    // open the knees outward so hands reach the oars (rad)
-const CAPT_SPREAD_AXIS = new THREE.Vector3(0, 0, 1);   // bone-local Z: thigh abduction
-const _captQ = new THREE.Quaternion();                    // scratch, reused each frame
+const CAPT_ARM_AXIS    = new THREE.Vector3(1, 0, 0);     
+const CAPT_ARM_LOWER   = 0.85;  
+const CAPT_ELBOW_BEND  = 1.15;   
+const CAPT_THIGH_BEND  = 1.45;   
+const CAPT_KNEE_BEND   = -1.5;   
+const CAPT_LEG_SPREAD  = 0.5;    
+const CAPT_SPREAD_AXIS = new THREE.Vector3(0, 0, 1);  
+const _captQ = new THREE.Quaternion();                    
 
 const captGroup = new THREE.Group();
 boatGroup.add(captGroup);
@@ -603,8 +590,7 @@ const captBones = { armL: null, foreL: null, handL: null, armR: null, foreR: nul
 const captRest  = new WeakMap();  // bone -> rest quaternion
 let captArmLen = 0, captForeLen = 0;   // world-space upper-arm and forearm lengths (set on load)
 
-// --- 2-bone IK: drive the captain's hands onto the moving oar handles. Because the
-//     oars already row in a circle, his arms inherit that motion in sync. ---
+
 const _ikUp = new THREE.Vector3(0, 1, 0);
 const _ikS = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikN = new THREE.Vector3();
 const _ikPerp = new THREE.Vector3(), _ikDir = new THREE.Vector3(), _ikHandle = new THREE.Vector3();
@@ -746,20 +732,43 @@ window.addEventListener('resize', () => {
 const clock = new THREE.Clock();
 const _capTarget = new THREE.Vector3();
 
-const batRoot = new THREE.Group();
-batRoot.position.set(0, -3, 0);
-scene.add(batRoot);
+// ---------------- BAT SWARM ----------------
+const BAT_COUNT    = 11;                          
+const BAT_WINGSPAN = 0.6;                         
+const FLAP_AXIS = new THREE.Vector3(1, 0, 0);     
+const _flapQ = new THREE.Quaternion();           
 
 
-const BAT_WINGSPAN = 2.5;                        // target wingspan in world units
-const FLAP_AXIS = new THREE.Vector3(1, 0, 0);    // bone-local flap axis (head-tail axis)
-const _flapQ = new THREE.Quaternion();           // scratch, reused each frame
+const ROOST_MIN = new THREE.Vector3(-2.5, -11.0, -0.1);  
+const ROOST_MAX = new THREE.Vector3( 2.5,  -8.0,  2.4);
+const EXIT_Y       = 4.0;     
+const FLEE_RADIUS  = 4.0;     
+const FLEE_SPEED   = 7.0;     
+const STEER_FORCE  = 3.0;    
+const RETURN_FORCE = 0.7;     
+const WANDER_FORCE = 0.7;    
+const MAX_SPEED    = 9.0;
 
-// bones we drive ourselves once the model has loaded
-const batBones = { armL: null, armR: null, wingL: null, wingR: null };
-const batRest  = new WeakMap();                  // bone -> rest quaternion
 
-// match bone by name regardless of '.'/'_' sanitization differences
+const _batAcc  = new THREE.Vector3();
+const _batTmp  = new THREE.Vector3();
+const _batTmp2 = new THREE.Vector3();
+
+
+function respawnRoost(bat) {
+    bat.home.set(
+        THREE.MathUtils.lerp(ROOST_MIN.x, ROOST_MAX.x, Math.random()),
+        THREE.MathUtils.lerp(ROOST_MIN.y, ROOST_MAX.y, Math.random()),
+        THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random())
+    );
+    bat.root.position.copy(bat.home);
+    bat.vel.set((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5);
+    bat.spread = (Math.random() - 0.5) * 1.3;   
+    bat.state = 'roost';
+    bat.fleeing = 0;
+}
+
+
 function findBone(root, targetName) {
     const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const t = norm(targetName);
@@ -768,23 +777,25 @@ function findBone(root, targetName) {
     return found;
 }
 
+const bats = [];   // populated once the model loads
+
 const gltfLoader = new GLTFLoader();
 gltfLoader.load(
     './models/bat.glb',
     (gltf) => {
-        const model = gltf.scene;
+        const source = gltf.scene;
 
-        model.rotation.y = -Math.PI / 2;
+        source.rotation.y = -Math.PI / 2;
 
-        model.updateMatrixWorld(true);
-        let box = new THREE.Box3().setFromObject(model);
+        source.updateMatrixWorld(true);
+        let box = new THREE.Box3().setFromObject(source);
         const span = box.getSize(new THREE.Vector3()).x || 1;   // wingspan after yaw
-        model.scale.setScalar(BAT_WINGSPAN / span);
-        model.updateMatrixWorld(true);
-        box = new THREE.Box3().setFromObject(model);
-        model.position.sub(box.getCenter(new THREE.Vector3()));
+        source.scale.setScalar(BAT_WINGSPAN / span);
+        source.updateMatrixWorld(true);
+        box = new THREE.Box3().setFromObject(source);
+        source.position.sub(box.getCenter(new THREE.Vector3()));
 
-        model.traverse((child) => {
+        source.traverse((child) => {
             if (!child.isMesh) return;
             child.castShadow = true;
             child.receiveShadow = true;
@@ -794,40 +805,141 @@ gltfLoader.load(
             }
         });
 
-        batRoot.add(model);
+        for (let i = 0; i < BAT_COUNT; i++) {
+            const root  = new THREE.Group();
+            const model = cloneSkeleton(source);    // deep clone incl. skeleton
+            root.add(model);
 
-        // Grab the bones we animate and remember their rest orientation
-        batBones.armL  = findBone(model, 'arm1.L_Armature');
-        batBones.armR  = findBone(model, 'arm1.R_Armature');
-        batBones.wingL = findBone(model, 'wing1.L_Armature');
-        batBones.wingR = findBone(model, 'wing1.R_Armature');
-        for (const b of Object.values(batBones)) {
-            if (b) batRest.set(b, b.quaternion.clone());
+            scene.add(root);
+
+            const bones = {
+                armL:  findBone(model, 'arm1.L_Armature'),
+                armR:  findBone(model, 'arm1.R_Armature'),
+                wingL: findBone(model, 'wing1.L_Armature'),
+                wingR: findBone(model, 'wing1.R_Armature'),
+            };
+            const rest = new Map();
+            for (const b of Object.values(bones)) if (b) rest.set(b, b.quaternion.clone());
+
+            const bat = {
+                root, bones, rest,
+                home:    new THREE.Vector3(),
+                vel:     new THREE.Vector3(),
+                phase:   Math.random() * Math.PI * 2,   // desync the flapping
+                flapMul: 0.8 + Math.random() * 0.8,     // vary flap speed per bat
+                spread:  0,
+                state:   'roost',
+                fleeing: 0,                             // 0..1, decays each frame
+            };
+            respawnRoost(bat);
+            bats.push(bat);
         }
-        console.log('Bat loaded. Driven bones:',
-            Object.entries(batBones).filter(([, b]) => b).map(([k]) => k).join(', ') || 'NONE');
+        console.log(`Bat colony loaded: ${bats.length} bats.`);
     },
     undefined,
     (err) => console.error('Error loading bat.glb:', err)
 );
 
-const point1 = { x: -2.0, y: -3.8, z:  0.6 };
-const point2 = { x:  1.8, y: -2.4, z: -0.2 };
-const point3 = { x:  0.0, y: -3.0, z:  0.0 };
+// drive one bat's wing bones from inner/outer flap angles
+function flapBat(bat, innerAngle, outerAngle) {
+    if (!bat.bones.armL) return;
+    const apply = (bone, angle) => {
+        const rest = bat.rest.get(bone);
+        if (!rest) return;
+        _flapQ.setFromAxisAngle(FLAP_AXIS, angle);
+        bone.quaternion.copy(rest).multiply(_flapQ);
+    };
+    apply(bat.bones.armL,  innerAngle);
+    apply(bat.bones.armR,  innerAngle);
+    apply(bat.bones.wingL, outerAngle);
+    apply(bat.bones.wingR, outerAngle);
+}
 
-const tween1 = new TWEEN.Tween(batRoot.position).to(point1, 4000).easing(TWEEN.Easing.Quadratic.InOut);
-const tween2 = new TWEEN.Tween(batRoot.position).to(point2, 4000).easing(TWEEN.Easing.Quadratic.InOut);
-const tween3 = new TWEEN.Tween(batRoot.position).to(point3, 4000).easing(TWEEN.Easing.Quadratic.InOut);
 
-tween1.onStart(() => batRoot.lookAt(point1.x, point1.y, point1.z));
-tween2.onStart(() => batRoot.lookAt(point2.x, point2.y, point2.z));
-tween3.onStart(() => batRoot.lookAt(point3.x, point3.y, point3.z));
+function updateBats(timeSec, dt, boatPos) {
+    for (const bat of bats) {
+        if (bat.state === 'gone') continue;   // already left the scene, never returns
 
-tween1.chain(tween2);
-tween2.chain(tween3);
-tween3.chain(tween1);
+        const p = bat.root.position;
+        _batAcc.set(0, 0, 0);
 
-tween1.start();
+        // how close is the boat to this bat?
+        _batTmp.copy(p).sub(boatPos);
+        const dBoat = _batTmp.length();
+
+        if (bat.state === 'roost') {
+            // mill around the roost anchor
+            _batTmp2.copy(bat.home).sub(p).multiplyScalar(RETURN_FORCE);
+            _batAcc.add(_batTmp2);
+            _batAcc.x += (Math.random() - 0.5) * WANDER_FORCE;
+            _batAcc.y += (Math.random() - 0.5) * WANDER_FORCE;
+            _batAcc.z += (Math.random() - 0.5) * WANDER_FORCE;
+
+            // coherent gentle hover bob so an idle bat still breathes
+            _batAcc.z += Math.sin(timeSec * 1.5 + bat.phase) * 0.6;
+
+            // the passing boat startles the colony -> take flight
+            if (dBoat < FLEE_RADIUS) bat.state = 'flee';
+        }
+
+        if (bat.state === 'flee') {
+            bat.fleeing = 1;
+
+            // steer toward a cruise velocity heading out of the cave: mostly +Y
+            // (toward the observer), fanned sideways, and angled slightly upward
+            _batTmp2.set(bat.spread, 1.0, 0.22).normalize().multiplyScalar(FLEE_SPEED);
+            _batTmp2.sub(bat.vel).multiplyScalar(STEER_FORCE);
+            _batAcc.add(_batTmp2);
+
+            // initial shove directly away from the boat for a snappier scatter
+            if (dBoat < FLEE_RADIUS && dBoat > 1e-4) {
+                _batTmp.multiplyScalar((FLEE_RADIUS - dBoat) / dBoat * 6.0);
+                _batAcc.add(_batTmp);
+            }
+
+            // left the scene behind the observer -> gone for good, hide and stop
+            if (p.y > EXIT_Y) { bat.state = 'gone'; bat.root.visible = false; continue; }
+        } else {
+            bat.fleeing *= 0.94;
+        }
+
+        // integrate velocity with damping + speed cap
+        bat.vel.addScaledVector(_batAcc, dt);
+        bat.vel.multiplyScalar(0.97);
+        const sp = bat.vel.length();
+        if (sp > MAX_SPEED) bat.vel.multiplyScalar(MAX_SPEED / sp);
+        p.addScaledVector(bat.vel, dt);
+
+        // confine roosting bats to the cave-end box; fleeing bats only stay above water
+        if (bat.state === 'roost') {
+            p.x = THREE.MathUtils.clamp(p.x, ROOST_MIN.x, ROOST_MAX.x);
+            p.y = THREE.MathUtils.clamp(p.y, ROOST_MIN.y, ROOST_MAX.y);
+            p.z = THREE.MathUtils.clamp(p.z, ROOST_MIN.z, ROOST_MAX.z);
+        } else {
+            p.z = THREE.MathUtils.clamp(p.z, -0.1, 3.2);
+        }
+
+        // face direction of travel
+        if (bat.vel.lengthSq() > 1e-4) {
+            _batTmp.copy(p).add(bat.vel);
+            bat.root.lookAt(_batTmp);
+        }
+
+        // wing motion: full flap while fleeing, slow shallow idle while roosting
+        let inner, outer;
+        if (bat.state === 'flee') {
+            const fs = params.flapSpeed * bat.flapMul * (1 + bat.fleeing * 1.6);
+            inner = Math.sin(timeSec * fs + bat.phase)       * 0.5;
+            outer = Math.sin(timeSec * fs + bat.phase - 1.2) * 0.7;
+        } else {
+            // idle: slow, small wing settle (slight fold) so a perched bat reads as alive
+            const idle = timeSec * 1.8 * bat.flapMul + bat.phase;
+            inner = 0.10 + Math.sin(idle)        * 0.06;
+            outer = 0.16 + Math.sin(idle - 0.5)  * 0.10;
+        }
+        flapBat(bat, inner, outer);
+    }
+}
 
 const params = {
     boatSpeed: 0.05,
@@ -992,25 +1104,8 @@ function animate() {
         }
     }
 
-    // --- Our own flapping animation, driving the imported skeleton's bones ---
-    const flapAmp = 0.5;
-    const phaseOffset = 1.2;
-
-    const innerAngle = Math.sin(timeSec * params.flapSpeed) * flapAmp;
-    const outerAngle = Math.sin(timeSec * params.flapSpeed - phaseOffset) * (flapAmp * 1.4);
-
-    const flapBone = (bone, angle, sign) => {
-        const rest = batRest.get(bone);
-        if (!rest) return;
-        _flapQ.setFromAxisAngle(FLAP_AXIS, angle * sign);
-        bone.quaternion.copy(rest).multiply(_flapQ);
-    };
-    if (batBones.armL) {
-        flapBone(batBones.armL,  innerAngle, +1);   // upper arm = primary flap
-        flapBone(batBones.armR,  innerAngle, +1);   // mirrored bone -> same sign = beats together
-        flapBone(batBones.wingL, outerAngle, +1);   // outer wing = phase-lagged tip
-        flapBone(batBones.wingR, outerAngle, +1);
-    }
+    // --- Bat swarm: wander, flee the boat, and flap ---
+    if (bats.length) updateBats(timeSec, dt, boatGroup.position);
 
     const intensityVariance = 4.0;
 
