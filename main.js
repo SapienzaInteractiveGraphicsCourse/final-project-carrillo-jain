@@ -8,10 +8,9 @@ import * as TWEEN from 'three/addons/libs/tween.module.js';
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
-
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060a);
-
+scene.fog = new THREE.FogExp2(0x05060a, 0.015); // Add atmospheric depth to the cave
 const camera = new THREE.PerspectiveCamera(
     60,
     window.innerWidth / window.innerHeight,
@@ -342,9 +341,18 @@ function waveHeight(x, y, t, ampScale = 1.0) {
     return h;
 }
 
+// --- INTERSECTION FOAM RENDER TARGET ---
+
 const MAX_WATER_LIGHTS = 8;
+const depthTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+depthTarget.depthTexture = new THREE.DepthTexture();
+depthTarget.depthTexture.type = THREE.UnsignedShortType;
 
 const waterUniforms = {
+    tDepth:          { value: depthTarget.depthTexture },
+    cameraNear:      { value: camera.near },
+    cameraFar:       { value: camera.far },
+    resolution:      { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
     uTime:           { value: 0 },
     uAmpScale:       { value: 1.0 },
     uExposure:       { value: 1.15 },   // keep in sync with renderer.toneMappingExposure
@@ -362,6 +370,8 @@ const waterUniforms = {
 };
 
 const waterVertex = `
+    #include <clipping_planes_pars_vertex>
+
     #define NUM ${WAVES.length}
 
     uniform float uTime;
@@ -397,11 +407,19 @@ const waterVertex = `
 
         vec4 worldPos = modelMatrix * vec4(pos, 1.0);
         vWorldPos = worldPos.xyz;
-        gl_Position = projectionMatrix * viewMatrix * worldPos;
+
+        // Required for clipping planes to work in WebGL
+        vec4 mvPosition = viewMatrix * worldPos;
+        #include <clipping_planes_vertex>
+
+        gl_Position = projectionMatrix * mvPosition;
     }
 `;
 
 const waterFragment = `
+    #include <clipping_planes_pars_fragment>
+    #include <packing>
+
     #define MAXL ${MAX_WATER_LIGHTS}
 
     uniform vec3  uBaseColor;
@@ -413,11 +431,15 @@ const waterFragment = `
     uniform vec3  uLightColor[MAXL];
     uniform float uLightIntensity[MAXL];
 
+    // Foam uniforms
+    uniform sampler2D tDepth;
+    uniform float cameraNear;
+    uniform float cameraFar;
+    uniform vec2 resolution;
+
     varying vec3 vWorldPos;
     varying vec3 vNormal;
 
-    // Match the renderer's ACESFilmicToneMapping + sRGB output so the water
-    // sits in the same tonal range as the tone-mapped cave around it.
     vec3 acesFilmic(vec3 x) {
         const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
         return clamp((x * (a * x + b)) / (x * (c * x + d) + e), 0.0, 1.0);
@@ -428,9 +450,13 @@ const waterFragment = `
     }
 
     void main() {
-        vec3 N = normalize(vNormal);
-        vec3 V = normalize(cameraPosition - vWorldPos);
+        // 1. Apply the Diorama Cut
+        #include <clipping_planes_fragment>
 
+        vec3 N = normalize(vNormal);
+        if (!gl_FrontFacing) N = -N; // Fixes lighting if you fly under the water!
+        
+        vec3 V = normalize(cameraPosition - vWorldPos);
         vec3 color = uBaseColor * uAmbient;
 
         for (int i = 0; i < MAXL; i++) {
@@ -451,9 +477,24 @@ const waterFragment = `
         float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
         color += uBaseColor * fres * 0.25;
 
+        // 2. Calculate the Intersection Foam
+        vec2 screenPos = gl_FragCoord.xy / resolution;
+        float sceneDepthRaw = texture2D(tDepth, screenPos).x;
+        float sceneViewZ = perspectiveDepthToViewZ(sceneDepthRaw, cameraNear, cameraFar);
+        float waterViewZ = perspectiveDepthToViewZ(gl_FragCoord.z, cameraNear, cameraFar);
+
+        // How close is the water to the rocks?
+        float depthDiff = abs(sceneViewZ - waterViewZ);
+        
+        // If it's within 0.3 units of the rock, paint it white!
+        float foam = 1.0 - smoothstep(0.0, 0.3, depthDiff);
+        color = mix(color, vec3(1.0, 1.0, 1.0), foam * 0.8);
+
         color = acesFilmic(color * uExposure);
         color = linearToSRGB(color);
-        gl_FragColor = vec4(color, uOpacity);
+        
+        // Make the foamy parts slightly more solid/opaque
+        gl_FragColor = vec4(color, uOpacity + (foam * 0.5)); 
     }
 `;
 
@@ -463,9 +504,12 @@ const waterMaterial = new THREE.ShaderMaterial({
     vertexShader: waterVertex,
     fragmentShader: waterFragment,
     transparent: true,
-    toneMapped: false,   // we tone-map + sRGB-encode inside the fragment shader
+    toneMapped: false,   
     side: THREE.DoubleSide,
+    clipping: true,                // Turns on slicing
+    clippingPlanes: [roofCutPlane] // Defines the slice plane
 });
+
 const water = new THREE.Mesh(waterGeometry, waterMaterial);
 
 water.position.set(0, 0, -1.0);
@@ -1020,6 +1064,22 @@ function animate() {
 
     const timeSec = now * 0.001;
 
+    // --- UNDERWATER CAMERA SENSOR ---
+    // Calculate the exact wave height at the camera's location
+    const camWaveHeight = waveHeight(camera.position.x, camera.position.y, timeSec, params.waveAmplitude);
+    const waterSurfaceZ = -1.0 + camWaveHeight; // -1.0 is the base height of your water
+
+    if (camera.position.z < waterSurfaceZ) {
+        // We are UNDERWATER! Turn the fog dense and murky teal
+        scene.fog.color.setHex(0x1f6f7a); 
+        scene.fog.density = 0.3;          
+    } else {
+        // We are IN THE CAVE! Turn the fog back to the dark cave air
+        scene.fog.color.setHex(0x05060a); 
+        scene.fog.density = 0.015;        
+    }
+    // --------------------------------
+
     waterMaterial.uniforms.uTime.value     = timeSec;
     waterMaterial.uniforms.uAmpScale.value = params.waveAmplitude;
 
@@ -1134,6 +1194,16 @@ function animate() {
         torch.position.z = startZ + (Math.cos(localTime * 17.0) * 0.02);
     });
 
+   // --- 1. HIDE WATER & CAP, RENDER DEPTH ---
+    water.visible = false;
+    capMesh.visible = false; // Hide the slicing cap so it doesn't create a fake wall!
+    renderer.setRenderTarget(depthTarget);
+    renderer.render(scene, camera);
+
+    // --- 2. SHOW WATER & CAP, RENDER TO SCREEN ---
+    water.visible = true;
+    capMesh.visible = true;  // Bring it back for the real render!
+    renderer.setRenderTarget(null);
     renderer.render(scene, camera);
     TWEEN.update();
     tickFps(now);
