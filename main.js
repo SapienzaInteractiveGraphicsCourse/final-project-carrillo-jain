@@ -227,7 +227,6 @@ function createTorch(position, { intensity = 10, color = 0xffaa44, castShadow = 
 const torches = [
     createTorch(new THREE.Vector3(-4.15, -5.23, 0.09), { castShadow: true }),
     createTorch(new THREE.Vector3(1.22, -6.77, 1.06), { castShadow: true }),
-    createTorch(new THREE.Vector3(2.3, -1.9, -0.6), { castShadow: true }),
 ];
 
 const roofCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -1.5);
@@ -356,9 +355,9 @@ const waterUniforms = {
     uTime:           { value: 0 },
     uAmpScale:       { value: 1.0 },
     uExposure:       { value: 1.15 },   // keep in sync with renderer.toneMappingExposure
-    uBaseColor:      { value: new THREE.Color(0x1f6f7a) },
-    uAmbient:        { value: new THREE.Color(0x202830) },
-    uOpacity:        { value: 0.72 },
+    uBaseColor:      { value: new THREE.Color(0x041a1e) }, // Deep, near-black teal
+    uAmbient:        { value: new THREE.Color(0x05080a) }, // Extremely dark ambient shadow
+    uOpacity:        { value: 0.90 },
     uAmp:            { value: WAVES.map(w => w.amp) },
     uDir:            { value: WAVES.map(w => w.dir.clone()) },
     uFreq:           { value: WAVES.map(w => w.freq) },
@@ -488,7 +487,7 @@ const waterFragment = `
         
         // If it's within 0.3 units of the rock, paint it white!
         float foam = 1.0 - smoothstep(0.0, 0.3, depthDiff);
-        color = mix(color, vec3(1.0, 1.0, 1.0), foam * 0.8);
+        
 
         color = acesFilmic(color * uExposure);
         color = linearToSRGB(color);
