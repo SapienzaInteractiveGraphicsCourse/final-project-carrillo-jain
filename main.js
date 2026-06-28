@@ -343,6 +343,14 @@ function waveHeight(x, y, t, ampScale = 1.0) {
 // --- INTERSECTION FOAM RENDER TARGET ---
 
 const MAX_WATER_LIGHTS = 8;
+
+// --- OAR RIPPLES ---
+// Expanding decaying rings injected into the water surface where an oar blade
+// strikes the water. Kept in sync with the matching #defines in the shader.
+const MAX_RIPPLES   = 12;
+const RIPPLE_LIFE   = 2.6;   // seconds a ripple stays alive (== R_LIFE in shader)
+const RIPPLE_GAP    = 0.18;  // min seconds between ripples from the same oar
+
 const depthTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
 depthTarget.depthTexture = new THREE.DepthTexture();
 depthTarget.depthTexture.type = THREE.UnsignedShortType;
@@ -366,12 +374,27 @@ const waterUniforms = {
     uLightPos:       { value: Array.from({ length: MAX_WATER_LIGHTS }, () => new THREE.Vector3()) },
     uLightColor:     { value: Array.from({ length: MAX_WATER_LIGHTS }, () => new THREE.Color()) },
     uLightIntensity: { value: new Array(MAX_WATER_LIGHTS).fill(0) },
+
+    // Oar-strike ripples
+    uRippleCount:    { value: 0 },
+    uRippleOrigin:   { value: Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector2()) },
+    uRippleStart:    { value: new Array(MAX_RIPPLES).fill(-1000) },
 };
 
 const waterVertex = `
     #include <clipping_planes_pars_vertex>
 
     #define NUM ${WAVES.length}
+
+    // --- Oar ripple constants (keep RIPPLE_LIFE in JS == R_LIFE) ---
+    #define MAXR    ${MAX_RIPPLES}
+    #define R_AMP   0.055   // peak height of a fresh ripple
+    #define R_FREQ  15.0    // wavelength of the ring oscillation
+    #define R_SPEED 1.6     // how fast the ring expands (world units / sec)
+    #define R_OMEGA (R_FREQ * R_SPEED)
+    #define R_DECAY 1.7     // temporal fade rate
+    #define R_WIDTH 2.5     // tightness of the gaussian ring (larger = thinner)
+    #define R_LIFE  2.6     // seconds before a ripple is fully gone
 
     uniform float uTime;
     uniform float uAmpScale;
@@ -380,8 +403,40 @@ const waterVertex = `
     uniform float uFreq[NUM];
     uniform float uSpeed[NUM];
 
+    uniform int   uRippleCount;
+    uniform vec2  uRippleOrigin[MAXR];
+    uniform float uRippleStart[MAXR];
+
     varying vec3 vWorldPos;
     varying vec3 vNormal;
+
+    // Single decaying, outward-expanding ring. Returns the height contribution
+    // and writes its planar gradient (for correct normals/lighting).
+    float rippleHeight(vec2 p, vec2 origin, float age, out float dHdx, out float dHdy) {
+        dHdx = 0.0;
+        dHdy = 0.0;
+        if (age < 0.0 || age > R_LIFE) return 0.0;
+
+        vec2  delta = p - origin;
+        float d     = length(delta);
+        if (d < 1e-4) return 0.0;
+
+        float r    = R_SPEED * age;                       // expanding front radius
+        float env  = exp(-R_DECAY * age);                 // overall fade
+        float band = d - r;
+        float ring = exp(-R_WIDTH * band * band);         // gaussian shell at the front
+        float ph   = R_FREQ * d - R_OMEGA * age;          // travelling oscillation
+        float s    = sin(ph);
+        float c    = cos(ph);
+
+        float h    = R_AMP * env * ring * s;
+        // d/dd ( ring * s ) = ring*(-2*W*band)*s + ring*c*R_FREQ
+        float dHdd = R_AMP * env * (ring * (-2.0 * R_WIDTH * band) * s + ring * c * R_FREQ);
+        vec2  dir  = delta / d;
+        dHdx = dHdd * dir.x;
+        dHdy = dHdd * dir.y;
+        return h;
+    }
 
     void main() {
         vec3 pos = position;
@@ -397,6 +452,15 @@ const waterVertex = `
             float c = a * cos(phase) * uFreq[i];
             dHdx += c * uDir[i].x;
             dHdy += c * uDir[i].y;
+        }
+
+        // Oar-strike ripples
+        for (int i = 0; i < MAXR; i++) {
+            if (i >= uRippleCount) break;
+            float rdx, rdy;
+            h    += rippleHeight(pos.xy, uRippleOrigin[i], uTime - uRippleStart[i], rdx, rdy);
+            dHdx += rdx;
+            dHdy += rdy;
         }
 
         pos.z += h;
@@ -513,6 +577,88 @@ const water = new THREE.Mesh(waterGeometry, waterMaterial);
 
 water.position.set(0, 0, -1.0);
 scene.add(water);
+
+// --- OAR RIPPLE SYSTEM ---
+// The water plane sits in world XY (only offset on Z), so a blade's world XY
+// maps straight onto the shader's local plane coordinates.
+const WATER_BASE_Z = water.position.z;        // -1.0
+const ripples = [];                            // { x, y, start }
+
+function spawnRipple(x, y, t) {
+    ripples.push({ x, y, start: t });
+    if (ripples.length > MAX_RIPPLES) ripples.shift();
+}
+
+// Push the live ripple list into the shader uniforms.
+function uploadRipples(t) {
+    const origins = waterUniforms.uRippleOrigin.value;
+    const starts  = waterUniforms.uRippleStart.value;
+    let n = 0;
+    for (let i = 0; i < ripples.length && n < MAX_RIPPLES; i++) {
+        const r = ripples[i];
+        if (t - r.start > RIPPLE_LIFE) continue;   // expired
+        origins[n].set(r.x, r.y);
+        starts[n] = r.start;
+        n++;
+    }
+    waterUniforms.uRippleCount.value = n;
+    // Drop expired ripples so the array doesn't grow unbounded.
+    for (let i = ripples.length - 1; i >= 0; i--) {
+        if (t - ripples[i].start > RIPPLE_LIFE) ripples.splice(i, 1);
+    }
+}
+
+// Outboard blade-tip offset in each oar's local space, measured once from the mesh.
+const _oarTipLocal = new WeakMap();
+function oarTipLocal(oar, bladeSignX) {
+    let tip = _oarTipLocal.get(oar);
+    if (tip) return tip;
+    oar.updateWorldMatrix(true, true);
+    const inv = new THREE.Matrix4().copy(oar.matrixWorld).invert();
+    const box = new THREE.Box3();
+    const v   = new THREE.Vector3();
+    oar.traverse((c) => {
+        if (!c.isMesh || !c.geometry) return;
+        if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
+        const bb = c.geometry.boundingBox;
+        for (let xi = 0; xi < 2; xi++)
+        for (let yi = 0; yi < 2; yi++)
+        for (let zi = 0; zi < 2; zi++) {
+            v.set(xi ? bb.max.x : bb.min.x,
+                  yi ? bb.max.y : bb.min.y,
+                  zi ? bb.max.z : bb.min.z)
+             .applyMatrix4(c.matrixWorld).applyMatrix4(inv);
+            box.expandByPoint(v);
+        }
+    });
+    tip = box.isEmpty()
+        ? new THREE.Vector3(bladeSignX, 0, 0)
+        : new THREE.Vector3(bladeSignX >= 0 ? box.max.x : box.min.x,
+                            (box.min.y + box.max.y) * 0.5,
+                            (box.min.z + box.max.z) * 0.5);
+    _oarTipLocal.set(oar, tip);
+    return tip;
+}
+
+// Per-oar submersion state, so we emit one ripple per entry into the water.
+const oarDip = { L: { down: false, last: -1e3 }, R: { down: false, last: -1e3 } };
+const _bladeTip = new THREE.Vector3();
+
+function processOarRipple(oar, bladeSignX, state, t, ampScale) {
+    if (!oar) return;
+    const tip = oarTipLocal(oar, bladeSignX);
+    oar.updateWorldMatrix(true, false);
+    _bladeTip.copy(tip).applyMatrix4(oar.matrixWorld);
+
+    const surfaceZ  = WATER_BASE_Z + waveHeight(_bladeTip.x, _bladeTip.y, t, ampScale);
+    const submerged = _bladeTip.z < surfaceZ;
+
+    if (submerged && !state.down && (t - state.last) > RIPPLE_GAP) {
+        spawnRipple(_bladeTip.x, _bladeTip.y, t);
+        state.last = t;
+    }
+    state.down = submerged;
+}
 
 const riverPoints = [
 
@@ -1142,6 +1288,11 @@ function animate() {
     };
     if (oars.L) rowOar(oars.L, OAR_L_SIGN, -1);   // left blade at local -X
     if (oars.R) rowOar(oars.R, OAR_R_SIGN, +1);   // right blade at local +X
+
+    // Spawn a ripple whenever a blade tip dips below the water surface.
+    processOarRipple(oars.L, -1, oarDip.L, timeSec, params.waveAmplitude);
+    processOarRipple(oars.R, +1, oarDip.R, timeSec, params.waveAmplitude);
+    uploadRipples(timeSec);
 
     captGroup.position.y = params.seatHeight;
 
