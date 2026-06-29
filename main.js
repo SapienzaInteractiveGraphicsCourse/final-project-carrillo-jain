@@ -365,7 +365,7 @@ const waterUniforms = {
     uExposure:       { value: 1.15 },   // keep in sync with renderer.toneMappingExposure
     uBaseColor:      { value: new THREE.Color(0x041a1e) }, // Deep, near-black teal
     uAmbient:        { value: new THREE.Color(0x05080a) }, // Extremely dark ambient shadow
-    uOpacity:        { value: 0.90 },
+    uOpacity:        { value: 0.62 },
     uAmp:            { value: WAVES.map(w => w.amp) },
     uDir:            { value: WAVES.map(w => w.dir.clone()) },
     uFreq:           { value: WAVES.map(w => w.freq) },
@@ -590,10 +590,10 @@ const waterFragment = `
     // geometry; they only tilt the normal so the surface shatters light into glints.
     vec3 detailNormal(vec2 p, float t) {
         vec2 g = vec2(0.0);
-        g += rippleGrad(p, normalize(vec2( 0.80,  0.60)),  5.5, 1.1, 0.020, t);
-        g += rippleGrad(p, normalize(vec2(-0.62,  0.78)),  8.7, 1.5, 0.014, t);
-        g += rippleGrad(p, normalize(vec2( 0.20, -0.98)), 13.3, 1.9, 0.009, t);
-        g += rippleGrad(p, normalize(vec2(-0.95, -0.30)), 19.1, 2.4, 0.006, t);
+        g += rippleGrad(p, normalize(vec2( 0.80,  0.60)),  3.6, 1.0, 0.016, t);
+        g += rippleGrad(p, normalize(vec2(-0.62,  0.78)),  5.8, 1.3, 0.011, t);
+        g += rippleGrad(p, normalize(vec2( 0.20, -0.98)),  9.0, 1.6, 0.007, t);
+        g += rippleGrad(p, normalize(vec2(-0.95, -0.30)), 13.0, 2.0, 0.004, t);
         return normalize(vec3(-g.x, -g.y, 1.0));
     }
 
@@ -652,8 +652,9 @@ const waterFragment = `
         color = acesFilmic(color * uExposure);
         color = linearToSRGB(color);
 
-        // Grazing angles read as more solid/reflective; straight-down stays clearer.
-        float alpha = mix(uOpacity, 1.0, fres);
+        // Grazing angles read a touch more solid/reflective, but never fully opaque
+        // so the water keeps some translucency and feels fluid rather than dense.
+        float alpha = mix(uOpacity, min(uOpacity + 0.22, 0.92), fres);
         gl_FragColor = vec4(color, clamp(alpha + foam * 0.5, 0.0, 1.0));
     }
 `;
@@ -1240,7 +1241,8 @@ const params = {
     torchIntensity: 14.0,
     waveAmplitude: 1.0,
     waterReflectivity: 0.9,   // fresnel sheen strength
-    waterSparkle: 1.0,        // fine ripple normal strength (glitter)
+    waterOpacity: 0.62,       // lower = clearer / more fluid, higher = denser
+    waterSparkle: 0.8,        // fine ripple normal strength (glitter)
     waterGlint: 1.0,          // specular highlight brightness
     waterFlowSpeed: 0.35,     // how fast the fine surface shimmer drifts
     waterWakeStrength: 1.0    // size of the boat's wake / displacement
@@ -1260,6 +1262,7 @@ gui.add(params, 'flapSpeed', 0, 30).name('Bat Flap Speed');
 gui.add(params, 'torchIntensity', 0, 30).name('Torch Brightness');
 gui.add(params, 'waveAmplitude', 0, 3).name('Wave Amplitude');
 gui.add(params, 'waterReflectivity', 0, 2).name('Water Reflectivity');
+gui.add(params, 'waterOpacity', 0.2, 1).name('Water Density');
 gui.add(params, 'waterSparkle', 0, 3).name('Water Sparkle');
 gui.add(params, 'waterGlint', 0, 3).name('Water Glint');
 gui.add(params, 'waterFlowSpeed', 0, 1.5).name('Water Flow Speed');
@@ -1334,6 +1337,7 @@ function animate() {
     waterMaterial.uniforms.uTime.value         = timeSec;
     waterMaterial.uniforms.uAmpScale.value     = params.waveAmplitude;
     waterMaterial.uniforms.uReflectivity.value = params.waterReflectivity;
+    waterMaterial.uniforms.uOpacity.value      = params.waterOpacity;
     waterMaterial.uniforms.uSparkle.value      = params.waterSparkle;
     waterMaterial.uniforms.uSpecStrength.value = params.waterGlint;
     waterMaterial.uniforms.uDetailSpeed.value  = params.waterFlowSpeed;
