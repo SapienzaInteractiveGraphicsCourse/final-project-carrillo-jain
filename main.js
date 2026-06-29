@@ -379,6 +379,18 @@ const waterUniforms = {
     uRippleCount:    { value: 0 },
     uRippleOrigin:   { value: Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector2()) },
     uRippleStart:    { value: new Array(MAX_RIPPLES).fill(-1000) },
+
+    // Surface look / reflectivity
+    uReflectivity:   { value: 0.9 },                       // strength of the fresnel sheen
+    uSparkle:        { value: 1.0 },                       // fine micro-ripple normal strength
+    uSpecStrength:   { value: 1.0 },                       // overall glint brightness
+    uDetailSpeed:    { value: 0.35 },                      // how fast the fine ripples drift
+    uSkyColor:       { value: new THREE.Color(0x1a3a44) }, // cool tint reflected at grazing angles
+
+    // Boat wake / displacement
+    uBoatPos:        { value: new THREE.Vector2() },       // boat world XY
+    uBoatDir:        { value: new THREE.Vector2(0, 1) },   // boat forward (world XY, normalized)
+    uBoatSpeed:      { value: 0.0 },                       // 0 when stopped -> no wake
 };
 
 const waterVertex = `
@@ -407,8 +419,46 @@ const waterVertex = `
     uniform vec2  uRippleOrigin[MAXR];
     uniform float uRippleStart[MAXR];
 
+    uniform vec2  uBoatPos;
+    uniform vec2  uBoatDir;
+    uniform float uBoatSpeed;
+
     varying vec3 vWorldPos;
     varying vec3 vNormal;
+
+    // Displacement carved by the moving boat: the hull pushes the surface down,
+    // the bow shoulders up a bulge, and a Kelvin-style V wake trails behind.
+    // Scaled by uBoatSpeed so a stationary boat leaves the water still.
+    float boatWake(vec2 p) {
+        vec2  rel    = p - uBoatPos;
+        float along  = dot(rel, uBoatDir);              // + ahead of bow, - astern
+        vec2  side   = vec2(-uBoatDir.y, uBoatDir.x);
+        float across = dot(rel, side);
+        float d      = length(rel);
+
+        // Hull trough + bow bulge.
+        float hull = -exp(-d * d * 1.2) * 0.05;
+        float bow  =  exp(-((along - 0.5) * (along - 0.5) + across * across) * 1.5) * 0.05;
+        float h    = hull + bow;
+
+        // Trailing wake astern of the boat.
+        if (along < 0.2) {
+            float behind = max(-along, 0.0);
+
+            // Two diverging arms (Kelvin V, ~20 deg half-angle).
+            float arm    = abs(across) - behind * 0.36;
+            float armEnv = exp(-6.0 * arm * arm) * exp(-0.25 * behind);
+            float crest  = sin(behind * 5.0 + abs(across) * 3.0 - uTime * 3.0);
+            h += armEnv * crest * 0.04;
+
+            // Transverse stern waves filling the wedge.
+            float transEnv = exp(-0.3 * behind) * exp(-across * across * 0.25);
+            float trans    = sin(behind * 4.0 - uTime * 3.0);
+            h += transEnv * trans * 0.025;
+        }
+
+        return h * uBoatSpeed;
+    }
 
     // Single decaying, outward-expanding ring. Returns the height contribution
     // and writes its planar gradient (for correct normals/lighting).
@@ -463,6 +513,17 @@ const waterVertex = `
             dHdy += rdy;
         }
 
+        // Boat wake / displacement (gradient by finite difference for lighting).
+        if (uBoatSpeed > 0.0001) {
+            float e  = 0.06;
+            float bC = boatWake(pos.xy);
+            float bX = boatWake(pos.xy + vec2(e, 0.0));
+            float bY = boatWake(pos.xy + vec2(0.0, e));
+            h    += bC;
+            dHdx += (bX - bC) / e;
+            dHdy += (bY - bC) / e;
+        }
+
         pos.z += h;
 
         vec3 localNormal = normalize(vec3(-dHdx, -dHdy, 1.0));
@@ -494,6 +555,13 @@ const waterFragment = `
     uniform vec3  uLightColor[MAXL];
     uniform float uLightIntensity[MAXL];
 
+    uniform float uTime;
+    uniform float uReflectivity;
+    uniform float uSparkle;
+    uniform float uSpecStrength;
+    uniform float uDetailSpeed;
+    uniform vec3  uSkyColor;
+
     // Foam uniforms
     uniform sampler2D tDepth;
     uniform float cameraNear;
@@ -512,14 +580,36 @@ const waterFragment = `
                    c * 12.92, step(c, vec3(0.0031308)));
     }
 
+    // Planar gradient of one tiny travelling ripple (for per-pixel detail normals).
+    vec2 rippleGrad(vec2 p, vec2 dir, float frq, float spd, float amp, float t) {
+        float ph = dot(dir, p) * frq + t * spd * frq;
+        return amp * cos(ph) * frq * dir;
+    }
+
+    // High-frequency surface detail in z-up tangent space. These never displace
+    // geometry; they only tilt the normal so the surface shatters light into glints.
+    vec3 detailNormal(vec2 p, float t) {
+        vec2 g = vec2(0.0);
+        g += rippleGrad(p, normalize(vec2( 0.80,  0.60)),  5.5, 1.1, 0.020, t);
+        g += rippleGrad(p, normalize(vec2(-0.62,  0.78)),  8.7, 1.5, 0.014, t);
+        g += rippleGrad(p, normalize(vec2( 0.20, -0.98)), 13.3, 1.9, 0.009, t);
+        g += rippleGrad(p, normalize(vec2(-0.95, -0.30)), 19.1, 2.4, 0.006, t);
+        return normalize(vec3(-g.x, -g.y, 1.0));
+    }
+
     void main() {
         // 1. Apply the Diorama Cut
         #include <clipping_planes_fragment>
 
         vec3 N = normalize(vNormal);
         if (!gl_FrontFacing) N = -N; // Fixes lighting if you fly under the water!
-        
+
+        // Break up the smooth wave normal with fine moving ripples for sparkle.
+        vec3 dN = detailNormal(vWorldPos.xy, uTime * uDetailSpeed);
+        N = normalize(N + vec3(dN.x, dN.y, 0.0) * uSparkle);
+
         vec3 V = normalize(cameraPosition - vWorldPos);
+        vec3 R = reflect(-V, N);                 // mirror direction for glints
         vec3 color = uBaseColor * uAmbient;
 
         for (int i = 0; i < MAXL; i++) {
@@ -531,14 +621,20 @@ const waterFragment = `
 
             float diff = max(dot(N, L), 0.0);
             vec3  Hh   = normalize(L + V);
-            float spec = pow(max(dot(N, Hh), 0.0), 80.0);
+            float nh   = max(dot(N, Hh), 0.0);
+
+            float specBroad = pow(nh, 48.0);                       // soft sheen
+            float specTight = pow(nh, 220.0);                      // crisp highlight
+            float glint     = pow(max(dot(R, L), 0.0), 600.0);     // mirror-sharp sun-glitter
 
             color += uBaseColor * uLightColor[i] * diff * atten;
-            color += uLightColor[i] * spec * atten * 0.6;
+            color += uLightColor[i] * atten * (specBroad * 0.5 + specTight * 1.4) * uSpecStrength;
+            color += uLightColor[i] * atten * glint * 3.0 * uSpecStrength;
         }
 
-        float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
-        color += uBaseColor * fres * 0.25;
+        // Schlick fresnel for water (F0 ~ 0.02): grazing angles turn mirror-like.
+        float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
+        color += uSkyColor * fres * uReflectivity;               // reflective sheen
 
         // 2. Calculate the Intersection Foam
         vec2 screenPos = gl_FragCoord.xy / resolution;
@@ -548,16 +644,17 @@ const waterFragment = `
 
         // How close is the water to the rocks?
         float depthDiff = abs(sceneViewZ - waterViewZ);
-        
+
         // If it's within 0.3 units of the rock, paint it white!
         float foam = 1.0 - smoothstep(0.0, 0.3, depthDiff);
-        
+
 
         color = acesFilmic(color * uExposure);
         color = linearToSRGB(color);
-        
-        // Make the foamy parts slightly more solid/opaque
-        gl_FragColor = vec4(color, uOpacity + (foam * 0.5)); 
+
+        // Grazing angles read as more solid/reflective; straight-down stays clearer.
+        float alpha = mix(uOpacity, 1.0, fres);
+        gl_FragColor = vec4(color, clamp(alpha + foam * 0.5, 0.0, 1.0));
     }
 `;
 
@@ -584,6 +681,10 @@ scene.add(water);
 const WATER_BASE_Z = water.position.z;        // -1.0
 const ripples = [];                            // { x, y, start }
 
+// Boat-speed tracking for the wake displacement.
+const _boatPrevPos = new THREE.Vector3();
+let   _boatPrevValid = false;
+
 function spawnRipple(x, y, t) {
     ripples.push({ x, y, start: t });
     if (ripples.length > MAX_RIPPLES) ripples.shift();
@@ -608,34 +709,29 @@ function uploadRipples(t) {
     }
 }
 
-// Outboard blade-tip offset in each oar's local space, measured once from the mesh.
+// Blade-tip offset in each oar's local space, measured once from the mesh.
+// The oar pivots near the rowlock and its handle end is short, so the geometry
+// vertex farthest from the local origin is always the blade tip -- this works
+// regardless of how each oar node's local frame is mirrored or rotated.
 const _oarTipLocal = new WeakMap();
-function oarTipLocal(oar, bladeSignX) {
+function oarTipLocal(oar) {
     let tip = _oarTipLocal.get(oar);
     if (tip) return tip;
     oar.updateWorldMatrix(true, true);
     const inv = new THREE.Matrix4().copy(oar.matrixWorld).invert();
-    const box = new THREE.Box3();
     const v   = new THREE.Vector3();
+    let best  = null;
+    let bestD = -1;
     oar.traverse((c) => {
-        if (!c.isMesh || !c.geometry) return;
-        if (!c.geometry.boundingBox) c.geometry.computeBoundingBox();
-        const bb = c.geometry.boundingBox;
-        for (let xi = 0; xi < 2; xi++)
-        for (let yi = 0; yi < 2; yi++)
-        for (let zi = 0; zi < 2; zi++) {
-            v.set(xi ? bb.max.x : bb.min.x,
-                  yi ? bb.max.y : bb.min.y,
-                  zi ? bb.max.z : bb.min.z)
-             .applyMatrix4(c.matrixWorld).applyMatrix4(inv);
-            box.expandByPoint(v);
+        if (!c.isMesh || !c.geometry || !c.geometry.attributes.position) return;
+        const pos = c.geometry.attributes.position;
+        for (let i = 0; i < pos.count; i++) {
+            v.fromBufferAttribute(pos, i).applyMatrix4(c.matrixWorld).applyMatrix4(inv);
+            const d = v.lengthSq();
+            if (d > bestD) { bestD = d; best = v.clone(); }
         }
     });
-    tip = box.isEmpty()
-        ? new THREE.Vector3(bladeSignX, 0, 0)
-        : new THREE.Vector3(bladeSignX >= 0 ? box.max.x : box.min.x,
-                            (box.min.y + box.max.y) * 0.5,
-                            (box.min.z + box.max.z) * 0.5);
+    tip = best || new THREE.Vector3(1, 0, 0);
     _oarTipLocal.set(oar, tip);
     return tip;
 }
@@ -644,9 +740,9 @@ function oarTipLocal(oar, bladeSignX) {
 const oarDip = { L: { down: false, last: -1e3 }, R: { down: false, last: -1e3 } };
 const _bladeTip = new THREE.Vector3();
 
-function processOarRipple(oar, bladeSignX, state, t, ampScale) {
+function processOarRipple(oar, state, t, ampScale) {
     if (!oar) return;
-    const tip = oarTipLocal(oar, bladeSignX);
+    const tip = oarTipLocal(oar);
     oar.updateWorldMatrix(true, false);
     _bladeTip.copy(tip).applyMatrix4(oar.matrixWorld);
 
@@ -1142,7 +1238,12 @@ const params = {
     seatHeight: 0.12,       // captain hip height in boat-local +Y (raise so he sits on, not through, the hull)
     flapSpeed: 15.0,
     torchIntensity: 14.0,
-    waveAmplitude: 1.0
+    waveAmplitude: 1.0,
+    waterReflectivity: 0.9,   // fresnel sheen strength
+    waterSparkle: 1.0,        // fine ripple normal strength (glitter)
+    waterGlint: 1.0,          // specular highlight brightness
+    waterFlowSpeed: 0.35,     // how fast the fine surface shimmer drifts
+    waterWakeStrength: 1.0    // size of the boat's wake / displacement
 };
 
 const gui = new GUI();
@@ -1158,6 +1259,11 @@ gui.add(params, 'seatHeight', -0.1, 0.4).name('Seat Height');
 gui.add(params, 'flapSpeed', 0, 30).name('Bat Flap Speed');
 gui.add(params, 'torchIntensity', 0, 30).name('Torch Brightness');
 gui.add(params, 'waveAmplitude', 0, 3).name('Wave Amplitude');
+gui.add(params, 'waterReflectivity', 0, 2).name('Water Reflectivity');
+gui.add(params, 'waterSparkle', 0, 3).name('Water Sparkle');
+gui.add(params, 'waterGlint', 0, 3).name('Water Glint');
+gui.add(params, 'waterFlowSpeed', 0, 1.5).name('Water Flow Speed');
+gui.add(params, 'waterWakeStrength', 0, 3).name('Boat Wake');
 
 function animate() {
     requestAnimationFrame(animate);
@@ -1225,8 +1331,24 @@ function animate() {
     }
     // --------------------------------
 
-    waterMaterial.uniforms.uTime.value     = timeSec;
-    waterMaterial.uniforms.uAmpScale.value = params.waveAmplitude;
+    waterMaterial.uniforms.uTime.value         = timeSec;
+    waterMaterial.uniforms.uAmpScale.value     = params.waveAmplitude;
+    waterMaterial.uniforms.uReflectivity.value = params.waterReflectivity;
+    waterMaterial.uniforms.uSparkle.value      = params.waterSparkle;
+    waterMaterial.uniforms.uSpecStrength.value = params.waterGlint;
+    waterMaterial.uniforms.uDetailSpeed.value  = params.waterFlowSpeed;
+
+    // Boat wake: drive from the hull's actual world speed and heading.
+    let boatWorldSpeed = 0;
+    if (_boatPrevValid) boatWorldSpeed = currentPos.distanceTo(_boatPrevPos) / Math.max(dt, 1e-3);
+    _boatPrevPos.copy(currentPos);
+    _boatPrevValid = true;
+
+    const wakeAmt = THREE.MathUtils.clamp(boatWorldSpeed * 0.8, 0, 1.5) * params.waterWakeStrength;
+    waterMaterial.uniforms.uBoatPos.value.set(currentPos.x, currentPos.y);
+    const _tl = Math.hypot(currentTangent.x, currentTangent.y) || 1;
+    waterMaterial.uniforms.uBoatDir.value.set(currentTangent.x / _tl, currentTangent.y / _tl);
+    waterMaterial.uniforms.uBoatSpeed.value = wakeAmt;
 
     const _lp = waterMaterial.uniforms.uLightPos.value;
     const _lc = waterMaterial.uniforms.uLightColor.value;
@@ -1290,8 +1412,8 @@ function animate() {
     if (oars.R) rowOar(oars.R, OAR_R_SIGN, +1);   // right blade at local +X
 
     // Spawn a ripple whenever a blade tip dips below the water surface.
-    processOarRipple(oars.L, -1, oarDip.L, timeSec, params.waveAmplitude);
-    processOarRipple(oars.R, +1, oarDip.R, timeSec, params.waveAmplitude);
+    processOarRipple(oars.L, oarDip.L, timeSec, params.waveAmplitude);
+    processOarRipple(oars.R, oarDip.R, timeSec, params.waveAmplitude);
     uploadRipples(timeSec);
 
     captGroup.position.y = params.seatHeight;
