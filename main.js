@@ -1143,6 +1143,12 @@ const RETURN_FORCE = 0.7;
 const WANDER_FORCE = 0.7;
 const MAX_SPEED    = 9.0;
 
+// Colony "flying back in" after the scare: bats reappear out past the cave
+// mouth and fly in to their (new) roost spot, instead of just popping back
+// into place.
+const RETURN_SPEED       = 6.0;    // cruise speed while flying back to the roost
+const RETURN_ARRIVE_DIST = 0.4;    // close enough to home to call it "landed"
+
 // ---------------- CAPTAIN "BAT SCARE" ENCOUNTER ----------------
 // When the boat gets close enough to the roost, the whole colony erupts at
 // once (instead of the organic per-bat FLEE_RADIUS trickle) and streams
@@ -1157,12 +1163,14 @@ const ENCOUNTER_TRIGGER_DIST = 2.6;   // distance to roost center that triggers 
                                        // apex of the path, right by the roost, not partway there
 const ENCOUNTER_REARM_DIST   = 8.0;   // must retreat this far before it can trigger again
 const FREEZE_TIMEOUT         = 8.0;   // safety valve so a stuck bat can't soft-lock the boat
+const RETURN_TIMEOUT         = 10.0;  // safety valve so a stuck bat can't stall the return flight
 
 // 'cruising'        -- normal loop, rowing at normal speed
 // 'frozen'          -- boat + oars stopped, colony erupting
 // 'panicking'       -- rowing hard along the path until back at the entrance
-// 'batsAwayWait'     -- waiting outside; colony is about to resettle
-// 'captainAwayWait'  -- colony has resettled; waiting before rowing back in
+// 'batsAwayWait'    -- waiting outside; colony is about to fly back in
+// 'batsReturning'   -- colony is flying in from outside the cave to the roost
+// 'captainAwayWait' -- colony has landed; waiting before rowing back in
 let boatEncounterState = 'cruising';
 let encounterArmed     = true;
 let frozenElapsed      = 0;
@@ -1196,6 +1204,29 @@ function respawnRoost(bat) {
     bat.spread = (Math.random() - 0.5) * 1.3;
     bat.state = 'roost';
     bat.fleeing = 0;
+}
+
+
+// Sends a resettled bat flying back in from just outside the cave mouth to
+// a freshly-picked spot in the roost, instead of teleporting it there.
+function startBatReturn(bat) {
+    bat.home.set(
+        THREE.MathUtils.lerp(ROOST_MIN.x, ROOST_MAX.x, Math.random()),
+        THREE.MathUtils.lerp(ROOST_MIN.y, ROOST_MAX.y, Math.random()),
+        THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random())
+    );
+    bat.root.position.set(
+        (Math.random() - 0.5) * 3.0,
+        EXIT_Y + 0.5 + Math.random() * 2.5,
+        THREE.MathUtils.lerp(-0.85, 1.3, Math.random())
+    );
+    bat.root.visible = true;
+    // Give it an initial shove back into the cave (-Y) so it doesn't start
+    // the flight from a dead stop.
+    bat.vel.set((Math.random() - 0.5) * 0.6, -RETURN_SPEED * 0.5, (Math.random() - 0.5) * 0.3);
+    bat.spread = (Math.random() - 0.5) * 1.3;
+    bat.state = 'return';
+    bat.fleeing = 1;   // reuse the flee wingbeat (full flap) while actively flying in
 }
 
 
@@ -1349,6 +1380,22 @@ function updateBats(timeSec, dt, boatPos) {
 
             // left the scene behind the observer -> gone for good, hide and stop
             if (p.y > EXIT_Y) { bat.state = 'gone'; bat.root.visible = false; continue; }
+        } else if (bat.state === 'return') {
+            bat.fleeing = 1;
+
+            // steer straight toward the freshly-picked roost spot
+            _batTmp2.copy(bat.home).sub(p);
+            const distHome = _batTmp2.length();
+            if (distHome < RETURN_ARRIVE_DIST) {
+                // arrived -- settle into a normal roosting bat
+                bat.state = 'roost';
+                bat.fleeing = 0;
+                bat.vel.multiplyScalar(0.3);
+            } else {
+                _batTmp2.normalize().multiplyScalar(RETURN_SPEED);
+                _batTmp2.sub(bat.vel).multiplyScalar(STEER_FORCE);
+                _batAcc.add(_batTmp2);
+            }
         } else {
             bat.fleeing *= 0.94;
         }
@@ -1377,9 +1424,10 @@ function updateBats(timeSec, dt, boatPos) {
             bat.root.lookAt(_batTmp);
         }
 
-        // wing motion: full flap while fleeing, slow shallow idle while roosting
+        // wing motion: full flap while actively flying (fleeing or
+        // returning), slow shallow idle while roosting
         let inner, outer;
-        if (bat.state === 'flee') {
+        if (bat.state === 'flee' || bat.state === 'return') {
             const fs = params.flapSpeed * bat.flapMul * (1 + bat.fleeing * 1.6);
             inner = Math.sin(timeSec * fs + bat.phase)       * 0.5;
             outer = Math.sin(timeSec * fs + bat.phase - 1.2) * 0.7;
@@ -1500,12 +1548,23 @@ function animate() {
         encounterArmed = true;
     }
 
-    // 4. Once outside, wait out the two delays: the colony resettles
-    // first, then the captain rows back in.
+    // 4. Once outside: wait, then the colony flies back in from outside the
+    // cave, then (once landed) the captain rows back in after a second wait.
     if (boatEncounterState === 'batsAwayWait') {
         waitElapsed += dt;
         if (waitElapsed >= params.batsReturnDelay) {
-            for (const bat of bats) respawnRoost(bat);
+            for (const bat of bats) startBatReturn(bat);
+            boatEncounterState = 'batsReturning';
+            waitElapsed = 0;
+        }
+    } else if (boatEncounterState === 'batsReturning') {
+        waitElapsed += dt;
+        const allHome = bats.every(b => b.state === 'roost');
+        if (allHome || waitElapsed > RETURN_TIMEOUT) {
+            // safety valve: snap any straggler bats straight home
+            if (!allHome) {
+                for (const bat of bats) if (bat.state !== 'roost') respawnRoost(bat);
+            }
             boatEncounterState = 'captainAwayWait';
             waitElapsed = 0;
         }
@@ -1526,6 +1585,7 @@ function animate() {
     let oarRateMult = 1;
     if (boatEncounterState === 'frozen' ||
         boatEncounterState === 'batsAwayWait' ||
+        boatEncounterState === 'batsReturning' ||
         boatEncounterState === 'captainAwayWait') {
         boatDir = 0;
         oarRateMult = 0;
