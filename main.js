@@ -10,7 +10,7 @@ import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060a);
-scene.fog = new THREE.FogExp2(0x05060a, 0.015); // Add atmospheric depth to the cave
+scene.fog = new THREE.FogExp2(0x05060a, 0.022); // Add atmospheric depth to the cave
 const camera = new THREE.PerspectiveCamera(
     60,
     window.innerWidth / window.innerHeight,
@@ -29,6 +29,10 @@ renderer.toneMappingExposure = 1.15;
 renderer.localClippingEnabled = true;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// The scene is rendered twice per frame (depth pre-pass + main pass for water
+// refraction). Shadow maps only need to be computed once; without this, all
+// 7 point-light shadow cubemaps re-render every shadow caster twice per frame.
+renderer.shadowMap.autoUpdate = false;
 document.body.appendChild(renderer.domElement);
 
 const controls = new PointerLockControls(camera, renderer.domElement);
@@ -228,14 +232,18 @@ function maybeLogPosition() {
 
 
 // --- REPLACE YOUR EXISTING AMBIENT/HEMI/DIRECTIONAL LIGHTS WITH THIS ---
-const ambientLight = new THREE.AmbientLight(0x3a4658, 0.34); 
+// These are non-positional fills -- they light the WHOLE cave evenly,
+// including the unlit back where the bats roost. Kept low on purpose (and
+// lower than before) so the brighter torches dominate near the entrance
+// while the torch-less back stays genuinely dark instead of ambient-lit.
+const ambientLight = new THREE.AmbientLight(0x3a4658, 0.16);
 scene.add(ambientLight);
 
-const hemiLight = new THREE.HemisphereLight(0x55677f, 0x2a2018, 0.5); 
+const hemiLight = new THREE.HemisphereLight(0x55677f, 0x2a2018, 0.22);
 hemiLight.position.set(0, 0, 5);
 scene.add(hemiLight);
 
-const skyShaft = new THREE.DirectionalLight(0x9fb6cc, 0.28);
+const skyShaft = new THREE.DirectionalLight(0x9fb6cc, 0.16);
 skyShaft.position.set(2.5, 4.0, 3.0);
 skyShaft.target.position.set(-0.5, -4.0, -0.5);
 scene.add(skyShaft, skyShaft.target);
@@ -244,12 +252,20 @@ function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = 
     const light = new THREE.PointLight(color, intensity, 25, 2);
     light.position.copy(position);
     light.castShadow = castShadow;
+    // Remember which torches were authored as shadow casters. We only ever
+    // let a handful of these be castShadow=true at once (see
+    // updateActiveShadowTorches), toggled by distance to the camera, so mark
+    // eligibility here separately from the live castShadow flag.
+    light.userData.shadowEligible = castShadow;
     if (castShadow) {
         light.shadow.bias           = -0.0015;
         light.shadow.normalBias     =  0.03;
         light.shadow.radius         =  3;
-        light.shadow.mapSize.width  =  1024;
-        light.shadow.mapSize.height =  1024;
+        // Point-light shadows render 6 cube faces each; with several of
+        // these active at once this resolution matters a lot more than a
+        // single directional shadow map would. 512 is plenty for a torch.
+        light.shadow.mapSize.width  =  512;
+        light.shadow.mapSize.height =  512;
         light.shadow.camera.near    =  0.5;
         light.shadow.camera.far     =  25;
     }
@@ -265,24 +281,31 @@ function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = 
 }
 
 const torches = [
-    // Cave mouth / approach
-    createTorch(new THREE.Vector3(1.20, 1.60, 1.00), { castShadow: false }),
-    createTorch(new THREE.Vector3(-1.60, 0.60, 0.80), { castShadow: false }),
-
-    // Entrance / Front Area
-    createTorch(new THREE.Vector3(-0.50, -9.50, 0.80), { castShadow: true }),
-    createTorch(new THREE.Vector3(1.50, -10.00, 1.20), { castShadow: true }),
-
-    // Mid Cave
-    createTorch(new THREE.Vector3(1.22, -6.77, 1.06), { castShadow: true }),
-    createTorch(new THREE.Vector3(-2.00, -5.50, 0.90), { castShadow: true }),
-    createTorch(new THREE.Vector3(0.60, -8.20, 1.00), { castShadow: false }),
-
-    // Deep Cave / Bat Area
-    createTorch(new THREE.Vector3(-1.80, -3.20, 1.20), { castShadow: true }),
-    createTorch(new THREE.Vector3(2.10, -2.50, 0.50), { castShadow: true }),
-    createTorch(new THREE.Vector3(-0.20, -1.00, 1.50), { castShadow: true }),
+    // Cave mouth / approach only -- spread apart so each one lights a
+    // distinct pocket of the entrance instead of one overlapping pool.
+    // Everything past here (mid cave + the bat roost, y < -5 or so) is
+    // still unlit on purpose: it hides the bats' lack of a proper idle
+    // animation while roosting, and gives the "flies out of pitch
+    // darkness" scare more contrast.
+    createTorch(new THREE.Vector3( 1.90,  2.30, 1.15), { castShadow: false }),
+    createTorch(new THREE.Vector3(-2.40,  0.90, 0.70), { castShadow: false }),
+    createTorch(new THREE.Vector3( 0.20, -3.60, 1.10), { castShadow: false }),
 ];
+
+// Every point-light shadow (cube map) costs 6 full scene renders, so this
+// stays in place as a safety net even though neither remaining torch is a
+// shadow caster right now -- if a shadow-casting torch is ever added back,
+// only the ones nearest the camera will actually cast at once instead of
+// paying for all of them every frame.
+const MAX_ACTIVE_SHADOW_TORCHES = 2;
+const shadowEligibleTorches = torches.filter(t => t.userData.shadowEligible);
+
+function updateActiveShadowTorches(camPos) {
+    shadowEligibleTorches
+        .map(t => ({ t, d: t.position.distanceToSquared(camPos) }))
+        .sort((a, b) => a.d - b.d)
+        .forEach(({ t }, i) => { t.castShadow = i < MAX_ACTIVE_SHADOW_TORCHES; });
+}
 
 const roofCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -1.5);
 
@@ -409,7 +432,14 @@ const MAX_RIPPLES   = 12;
 const RIPPLE_LIFE   = 2.6;   // seconds a ripple stays alive (== R_LIFE in shader)
 const RIPPLE_GAP    = 0.18;  // min seconds between ripples from the same oar
 
-const depthTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight);
+// Half-resolution is plenty for the water-refraction depth sample (it's
+// blurred by the wave shader anyway) and cuts the fill cost of this extra
+// full-scene pass by 4x.
+const DEPTH_TARGET_SCALE = 0.5;
+const depthTarget = new THREE.WebGLRenderTarget(
+    Math.max(1, Math.floor(window.innerWidth * DEPTH_TARGET_SCALE)),
+    Math.max(1, Math.floor(window.innerHeight * DEPTH_TARGET_SCALE))
+);
 depthTarget.depthTexture = new THREE.DepthTexture();
 depthTarget.depthTexture.type = THREE.UnsignedShortType;
 
@@ -903,7 +933,10 @@ fbxLoader.load(
                 color: tex ? 0xffffff : 0x6b4a2f,
                 map: tex,
                 roughness: 0.85, metalness: 0.05,
-                clippingPlanes: [roofCutPlane], clipShadows: true,
+                // Same bug as the captain: roofCutPlane belongs to the cave
+                // roof/floor cutaway (capMesh), not to objects that move
+                // around in world Y -- it was clipping the boat/oars out of
+                // existence past that fixed Y line.
             });
         });
 
@@ -1037,13 +1070,14 @@ captLoader.load(
             if (!child.isMesh) return;
             child.castShadow = true;
             child.receiveShadow = true;
-            child.frustumCulled = false;     
-            const apply = (mat) => {
-                if (!mat) return;
-                mat.clippingPlanes = [roofCutPlane];
-                mat.clipShadows = true;
-            };
-            Array.isArray(child.material) ? child.material.forEach(apply) : apply(child.material);
+            child.frustumCulled = false;
+            // NOTE: intentionally NOT applying roofCutPlane here. That plane
+            // belongs to the cave roof/floor stencil cutaway (capMesh) --
+            // it clips anything past a fixed world Y, which is fine for a
+            // static cutaway plane but was also clipping the captain
+            // himself out of existence once the boat crossed that Y line
+            // (e.g. mid panic-retreat), making him vanish for part of the
+            // ride.
         });
 
         captGroup.rotation.y = CAPT_HEADING;
@@ -1079,32 +1113,75 @@ window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
+    depthTarget.setSize(
+        Math.max(1, Math.floor(window.innerWidth * DEPTH_TARGET_SCALE)),
+        Math.max(1, Math.floor(window.innerHeight * DEPTH_TARGET_SCALE))
+    );
 });
 
 const clock = new THREE.Clock();
 const _capTarget = new THREE.Vector3();
 
 // ---------------- BAT SWARM ----------------
-const BAT_COUNT    = 350;                          
+const BAT_COUNT    = 500;                          
 const BAT_WINGSPAN = 0.15;                         
 const FLAP_AXIS = new THREE.Vector3(1, 0, 0);     
 const _flapQ = new THREE.Quaternion();           
 
 
-const ROOST_MIN = new THREE.Vector3(-2.5, -11.0, -0.1);  
-const ROOST_MAX = new THREE.Vector3( 2.5,  -8.0,  2.4);
-const EXIT_Y       = 4.0;     
-const FLEE_RADIUS  = 4.0;     
-const FLEE_SPEED   = 7.0;     
-const STEER_FORCE  = 3.0;    
-const RETURN_FORCE = 0.7;     
-const WANDER_FORCE = 0.7;    
+// Z kept close to the water surface (WATER_BASE_Z ~= -1.0) rather than up
+// near the cave ceiling -- much easier to actually see them, especially
+// once they take flight.
+const ROOST_MIN = new THREE.Vector3(-2.5, -11.0, -0.85);
+const ROOST_MAX = new THREE.Vector3( 2.5,  -8.0,  0.35);
+const ROOST_CENTER = new THREE.Vector3().addVectors(ROOST_MIN, ROOST_MAX).multiplyScalar(0.5);
+const EXIT_Y       = 4.0;
+const FLEE_RADIUS  = 4.0;
+const FLEE_SPEED   = 7.0;
+const STEER_FORCE  = 3.0;
+const RETURN_FORCE = 0.7;
+const WANDER_FORCE = 0.7;
 const MAX_SPEED    = 9.0;
+
+// ---------------- CAPTAIN "BAT SCARE" ENCOUNTER ----------------
+// When the boat gets close enough to the roost, the whole colony erupts at
+// once (instead of the organic per-bat FLEE_RADIUS trickle) and streams
+// past the boat/captain. The captain freezes -- boat stops, oars stop --
+// until every bat has cleared the scene, then rows hard forward along the
+// same path he'd normally take out (the river loop already turns back
+// toward the entrance on its own -- we just speed through it). Once he's
+// out, the colony resettles after a delay, and he rows back in after a
+// second delay.
+const ENCOUNTER_TRIGGER_DIST = 2.6;   // distance to roost center that triggers the scare -- kept
+                                       // tight so it only fires once the boat is nearly at the
+                                       // apex of the path, right by the roost, not partway there
+const ENCOUNTER_REARM_DIST   = 8.0;   // must retreat this far before it can trigger again
+const FREEZE_TIMEOUT         = 8.0;   // safety valve so a stuck bat can't soft-lock the boat
+
+// 'cruising'        -- normal loop, rowing at normal speed
+// 'frozen'          -- boat + oars stopped, colony erupting
+// 'panicking'       -- rowing hard along the path until back at the entrance
+// 'batsAwayWait'     -- waiting outside; colony is about to resettle
+// 'captainAwayWait'  -- colony has resettled; waiting before rowing back in
+let boatEncounterState = 'cruising';
+let encounterArmed     = true;
+let frozenElapsed      = 0;
+let waitElapsed        = 0;           // used by both *AwayWait states
+let rowTimeSec         = 0;           // drives oar/arm animation only; paused while frozen/waiting
 
 
 const _batAcc  = new THREE.Vector3();
 const _batTmp  = new THREE.Vector3();
 const _batTmp2 = new THREE.Vector3();
+
+// LOD for the roost: a roosting (not fleeing) bat far from the camera is
+// nearly invisible, so its flocking forces / integration / bone flap only
+// need to run occasionally rather than every frame. Fleeing bats (which
+// fly toward the observer) always run at full rate.
+const LOD_DIST      = 12;
+const LOD_DIST_SQ   = LOD_DIST * LOD_DIST;
+const LOD_SKIP_FRAMES = 4;
+let _batFrameCounter = 0;
 
 
 function respawnRoost(bat) {
@@ -1114,8 +1191,9 @@ function respawnRoost(bat) {
         THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random())
     );
     bat.root.position.copy(bat.home);
+    bat.root.visible = true;   // a bat that had fled and gone invisible needs to reappear
     bat.vel.set((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5);
-    bat.spread = (Math.random() - 0.5) * 1.3;   
+    bat.spread = (Math.random() - 0.5) * 1.3;
     bat.state = 'roost';
     bat.fleeing = 0;
 }
@@ -1133,7 +1211,7 @@ const bats = [];   // populated once the model loads
 
 const gltfLoader = new GLTFLoader();
 gltfLoader.load(
-    './models/bat.glb',
+    './models/bat_lowpoly.glb',
     (gltf) => {
         const source = gltf.scene;
 
@@ -1149,7 +1227,11 @@ gltfLoader.load(
 
         source.traverse((child) => {
             if (!child.isMesh) return;
-            child.castShadow = true;
+            // Bats are tiny and there are hundreds of them; letting each one
+            // cast shadows into 7 point-light cubemaps was the single
+            // biggest cost of the swarm. They still receive light/shadow
+            // from the cave so they don't look flat.
+            child.castShadow = false;
             child.receiveShadow = true;
             if (child.material) {
                 child.material.side = THREE.DoubleSide;   // thin wing membranes
@@ -1209,15 +1291,32 @@ function flapBat(bat, innerAngle, outerAngle) {
 
 
 function updateBats(timeSec, dt, boatPos) {
-    for (const bat of bats) {
+    _batFrameCounter++;
+    for (let i = 0; i < bats.length; i++) {
+        const bat = bats[i];
         if (bat.state === 'gone') continue;   // already left the scene, never returns
 
         const p = bat.root.position;
-        _batAcc.set(0, 0, 0);
 
-        // how close is the boat to this bat?
+        // how close is the boat to this bat? Check this up front (cheap)
+        // so a bat can still be startled into flight promptly even while
+        // it's running on the reduced LOD update rate below.
         _batTmp.copy(p).sub(boatPos);
         const dBoat = _batTmp.length();
+        if (bat.state === 'roost' && dBoat < FLEE_RADIUS) bat.state = 'flee';
+
+        // LOD: a roosting bat far from the camera is barely visible, so
+        // skip its forces/integration/bone-flap update most frames. The
+        // per-bat index staggers which frame each one updates on, so the
+        // cost is spread out instead of every bat updating on the same tick.
+        if (bat.state === 'roost') {
+            const dCamSq = p.distanceToSquared(camera.position);
+            if (dCamSq > LOD_DIST_SQ && (_batFrameCounter + i) % LOD_SKIP_FRAMES !== 0) {
+                continue;
+            }
+        }
+
+        _batAcc.set(0, 0, 0);
 
         if (bat.state === 'roost') {
             // mill around the roost anchor
@@ -1229,17 +1328,16 @@ function updateBats(timeSec, dt, boatPos) {
 
             // coherent gentle hover bob so an idle bat still breathes
             _batAcc.z += Math.sin(timeSec * 1.5 + bat.phase) * 0.6;
-
-            // the passing boat startles the colony -> take flight
-            if (dBoat < FLEE_RADIUS) bat.state = 'flee';
         }
 
         if (bat.state === 'flee') {
             bat.fleeing = 1;
 
             // steer toward a cruise velocity heading out of the cave: mostly +Y
-            // (toward the observer), fanned sideways, and angled slightly upward
-            _batTmp2.set(bat.spread, 1.0, 0.22).normalize().multiplyScalar(FLEE_SPEED);
+            // (toward the observer), fanned sideways, and only a slight lift --
+            // kept low so the swarm stays near the water instead of climbing
+            // up toward the ceiling where it's hard to see.
+            _batTmp2.set(bat.spread, 1.0, 0.05).normalize().multiplyScalar(FLEE_SPEED);
             _batTmp2.sub(bat.vel).multiplyScalar(STEER_FORCE);
             _batAcc.add(_batTmp2);
 
@@ -1268,7 +1366,9 @@ function updateBats(timeSec, dt, boatPos) {
             p.y = THREE.MathUtils.clamp(p.y, ROOST_MIN.y, ROOST_MAX.y);
             p.z = THREE.MathUtils.clamp(p.z, ROOST_MIN.z, ROOST_MAX.z);
         } else {
-            p.z = THREE.MathUtils.clamp(p.z, -0.1, 3.2);
+            // Fleeing bats stay low and close to the water rather than
+            // climbing toward the ceiling.
+            p.z = THREE.MathUtils.clamp(p.z, -0.85, 1.3);
         }
 
         // face direction of travel
@@ -1304,7 +1404,11 @@ const params = {
     gripRoll: 144.72,       // degrees: rolls both palms toward the oar handle (tune for the grip)
     seatHeight: 0.12,       // captain hip height in boat-local +Y (raise so he sits on, not through, the hull)
     flapSpeed: 15.0,
-    torchIntensity: 14.0,
+    torchIntensity: 20.0,
+    panicBoatMult: 3.0,       // how much faster than boatSpeed the captain rows while fleeing
+    panicOarMult: 2.0,        // how much faster the oars/arms animate while fleeing
+    batsReturnDelay: 2.0,     // seconds after the captain exits before the colony reappears
+    captainReturnDelay: 1.5,  // seconds after the colony reappears before the captain rows back in
     waveAmplitude: 1.0,
     waterReflectivity: 0.9,   // fresnel sheen strength
     waterOpacity: 0.62,       // lower = clearer / more fluid, higher = denser
@@ -1326,6 +1430,10 @@ gui.add(params, 'gripRoll', -180, 180).name('Hand Roll');
 gui.add(params, 'seatHeight', -0.1, 0.4).name('Seat Height');
 gui.add(params, 'flapSpeed', 0, 30).name('Bat Flap Speed');
 gui.add(params, 'torchIntensity', 0, 30).name('Torch Brightness');
+gui.add(params, 'panicBoatMult', 1, 8).name('Panic Row Speed');
+gui.add(params, 'panicOarMult', 1, 6).name('Panic Oar Speed');
+gui.add(params, 'batsReturnDelay', 0, 15).name('Bats Return Delay (s)');
+gui.add(params, 'captainReturnDelay', 0, 15).name('Captain Return Delay (s)');
 gui.add(params, 'waveAmplitude', 0, 3).name('Wave Amplitude');
 gui.add(params, 'waterReflectivity', 0, 2).name('Water Reflectivity');
 gui.add(params, 'waterOpacity', 0.2, 1).name('Water Density');
@@ -1366,8 +1474,78 @@ function animate() {
     updateHud(now);
     maybeLogPosition();
 
-    boatProgress += dt * params.boatSpeed;
-    if (boatProgress >= 1.0) boatProgress = 0.0;
+    // --- Cave bat scare state machine ---
+    // 1. Trigger: boat wanders within range of the roost -> whole colony flees at once.
+    if (boatEncounterState === 'cruising' && encounterArmed && bats.length > 0 &&
+        boatGroup.position.distanceTo(ROOST_CENTER) < ENCOUNTER_TRIGGER_DIST) {
+        boatEncounterState = 'frozen';
+        encounterArmed = false;
+        frozenElapsed = 0;
+        for (const bat of bats) {
+            if (bat.state === 'roost') { bat.state = 'flee'; bat.fleeing = 1; }
+        }
+    }
+
+    // 2. While frozen: wait for every bat to clear the scene (or time out).
+    if (boatEncounterState === 'frozen') {
+        frozenElapsed += dt;
+        const allClear = bats.length === 0 || bats.every(b => b.state === 'gone');
+        if (allClear || frozenElapsed > FREEZE_TIMEOUT) {
+            boatEncounterState = 'panicking';
+        }
+    }
+
+    // 3. Re-arm once the boat is safely away from the roost again.
+    if (!encounterArmed && boatGroup.position.distanceTo(ROOST_CENTER) > ENCOUNTER_REARM_DIST) {
+        encounterArmed = true;
+    }
+
+    // 4. Once outside, wait out the two delays: the colony resettles
+    // first, then the captain rows back in.
+    if (boatEncounterState === 'batsAwayWait') {
+        waitElapsed += dt;
+        if (waitElapsed >= params.batsReturnDelay) {
+            for (const bat of bats) respawnRoost(bat);
+            boatEncounterState = 'captainAwayWait';
+            waitElapsed = 0;
+        }
+    } else if (boatEncounterState === 'captainAwayWait') {
+        waitElapsed += dt;
+        if (waitElapsed >= params.captainReturnDelay) {
+            boatEncounterState = 'cruising';
+        }
+    }
+
+    // 5. Drive the boat position and the oar/arm animation clock from the current phase.
+    // Back to the original single riverCurve for the whole journey -- the
+    // panic retreat just keeps rowing FORWARD along it (same direction as
+    // normal cruising, so the orientation/tangent stays correct) at a
+    // faster rate, following the same "to the back, then out" loop the
+    // path already traces, rather than a separate shortcut curve.
+    let boatDir = 1;
+    let oarRateMult = 1;
+    if (boatEncounterState === 'frozen' ||
+        boatEncounterState === 'batsAwayWait' ||
+        boatEncounterState === 'captainAwayWait') {
+        boatDir = 0;
+        oarRateMult = 0;
+    } else if (boatEncounterState === 'panicking') {
+        boatDir = params.panicBoatMult;
+        oarRateMult = params.panicOarMult;
+    }
+    rowTimeSec += dt * oarRateMult;
+
+    if (boatDir !== 0) {
+        boatProgress += dt * params.boatSpeed * boatDir;
+    }
+    if (boatProgress >= 1.0) {
+        boatProgress = 0.0;
+        // Wrapping back to the start while fleeing means he's made it out.
+        if (boatEncounterState === 'panicking') {
+            boatEncounterState = 'batsAwayWait';
+            waitElapsed = 0;
+        }
+    }
 
     const currentPos = riverCurve.getPointAt(boatProgress);
     const currentTangent = riverCurve.getTangentAt(boatProgress).normalize();
@@ -1393,7 +1571,7 @@ function animate() {
     const submersion = THREE.MathUtils.clamp((waterSurfaceZ - camera.position.z) / 0.05, 0, 1);
     setUnderwaterFactor(submersion);
     scene.fog.color.setHex(0x05060a).lerp(_underwaterFogColor, submersion);
-    scene.fog.density = THREE.MathUtils.lerp(0.015, 0.3, submersion);
+    scene.fog.density = THREE.MathUtils.lerp(0.022, 0.3, submersion);
     // --------------------------------
 
     waterMaterial.uniforms.uTime.value         = timeSec;
@@ -1442,7 +1620,9 @@ function animate() {
     boatGroup.rotateX(pitch);
     boatGroup.rotateZ(roll);
 
-    const oarPhase = timeSec * params.oarSpeed;
+    // Uses rowTimeSec (not timeSec) so the rowing motion actually freezes
+    // while the captain is spooked, and speeds up while he's panic-rowing.
+    const oarPhase = rowTimeSec * params.oarSpeed;
     const sweep = Math.sin(oarPhase) * params.oarAmplitude;
     const lift  = Math.cos(oarPhase) * params.oarLift;
 
@@ -1524,7 +1704,16 @@ function animate() {
         torch.position.z = torch.userData.startZ + (Math.cos(localTime * 17.0) * 0.02);
     });
 
+    // Only the torches nearest the camera actually cast shadows this frame
+    // (see updateActiveShadowTorches) -- keeps the point-light cubemap
+    // shadow cost bounded no matter how many shadow-eligible torches exist.
+    updateActiveShadowTorches(camera.position);
+
    // --- 1. HIDE WATER & CAP, RENDER DEPTH ---
+    // Recompute shadow maps once for this frame (autoUpdate is off above);
+    // the second render() below reuses them instead of redoing all 7
+    // point-light cubemap passes a second time.
+    renderer.shadowMap.needsUpdate = true;
     water.visible = false;
     renderer.setRenderTarget(depthTarget);
     renderer.render(scene, camera);
