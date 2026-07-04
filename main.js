@@ -141,6 +141,40 @@ const hud = document.createElement('div');
 hud.id = 'flight-hud';
 document.body.appendChild(hud);
 
+// --- PASTE THIS RIGHT AFTER THE HUD IS APPENDED ---
+
+// Underwater filter: a blurred blue-tinted glass pane over the canvas that fades
+// in continuously with submersion depth.
+const underwaterStyle = document.createElement('style');
+underwaterStyle.textContent = `
+    #underwater-overlay {
+        position: fixed; inset: 0;
+        pointer-events: none;
+        z-index: 4;
+        background: rgba(15, 70, 90, 0);
+        backdrop-filter: blur(0px) saturate(0.9);
+        -webkit-backdrop-filter: blur(0px) saturate(0.9);
+        transition: background-color 0.25s ease-out, backdrop-filter 0.25s ease-out;
+        mix-blend-mode: normal;
+    }
+`;
+document.head.appendChild(underwaterStyle);
+
+const underwaterOverlay = document.createElement('div');
+underwaterOverlay.id = 'underwater-overlay';
+document.body.appendChild(underwaterOverlay);
+
+// 0 (dry) -> 1 (fully submerged); ramps the CSS blur/tint and the fog together.
+function setUnderwaterFactor(t) {
+    const blurPx = t * 6;
+    underwaterOverlay.style.backdropFilter = `blur(${blurPx.toFixed(2)}px) saturate(${(1 - 0.3 * t).toFixed(2)})`;
+    underwaterOverlay.style.webkitBackdropFilter = underwaterOverlay.style.backdropFilter;
+    underwaterOverlay.style.backgroundColor = `rgba(15, 70, 90, ${(t * 0.38).toFixed(3)})`;
+}
+
+// Target color for the underwater fog
+const _underwaterFogColor = new THREE.Color(0x1f6f7a);
+
 const _fwd = new THREE.Vector3();
 const fmt = (n) => (n >= 0 ? ' ' : '') + n.toFixed(2);
 
@@ -193,21 +227,27 @@ function maybeLogPosition() {
 }
 
 
-const ambientLight = new THREE.AmbientLight(0x3a4658, 0.18);
+// --- REPLACE YOUR EXISTING AMBIENT/HEMI/DIRECTIONAL LIGHTS WITH THIS ---
+const ambientLight = new THREE.AmbientLight(0x3a4658, 0.34); 
 scene.add(ambientLight);
 
-const hemiLight = new THREE.HemisphereLight(0x4a5a72, 0x1a120c, 0.25);
-hemiLight.position.set(0, 0, 5);   // +Z is up in this scene
+const hemiLight = new THREE.HemisphereLight(0x55677f, 0x2a2018, 0.5); 
+hemiLight.position.set(0, 0, 5);
 scene.add(hemiLight);
 
-function createTorch(position, { intensity = 10, color = 0xffaa44, castShadow = false } = {}) {
+const skyShaft = new THREE.DirectionalLight(0x9fb6cc, 0.28);
+skyShaft.position.set(2.5, 4.0, 3.0);
+skyShaft.target.position.set(-0.5, -4.0, -0.5);
+scene.add(skyShaft, skyShaft.target);
+
+function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = false } = {}) {
     const light = new THREE.PointLight(color, intensity, 25, 2);
     light.position.copy(position);
     light.castShadow = castShadow;
     if (castShadow) {
         light.shadow.bias           = -0.0015;
         light.shadow.normalBias     =  0.03;
-        light.shadow.radius         =  3;       // soften the edge (PCFSoft)
+        light.shadow.radius         =  3;
         light.shadow.mapSize.width  =  1024;
         light.shadow.mapSize.height =  1024;
         light.shadow.camera.near    =  0.5;
@@ -225,8 +265,23 @@ function createTorch(position, { intensity = 10, color = 0xffaa44, castShadow = 
 }
 
 const torches = [
-    createTorch(new THREE.Vector3(-4.15, -5.23, 0.09), { castShadow: true }),
+    // Cave mouth / approach
+    createTorch(new THREE.Vector3(1.20, 1.60, 1.00), { castShadow: false }),
+    createTorch(new THREE.Vector3(-1.60, 0.60, 0.80), { castShadow: false }),
+
+    // Entrance / Front Area
+    createTorch(new THREE.Vector3(-0.50, -9.50, 0.80), { castShadow: true }),
+    createTorch(new THREE.Vector3(1.50, -10.00, 1.20), { castShadow: true }),
+
+    // Mid Cave
     createTorch(new THREE.Vector3(1.22, -6.77, 1.06), { castShadow: true }),
+    createTorch(new THREE.Vector3(-2.00, -5.50, 0.90), { castShadow: true }),
+    createTorch(new THREE.Vector3(0.60, -8.20, 1.00), { castShadow: false }),
+
+    // Deep Cave / Bat Area
+    createTorch(new THREE.Vector3(-1.80, -3.20, 1.20), { castShadow: true }),
+    createTorch(new THREE.Vector3(2.10, -2.50, 0.50), { castShadow: true }),
+    createTorch(new THREE.Vector3(-0.20, -1.00, 1.50), { castShadow: true }),
 ];
 
 const roofCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -1.5);
@@ -248,7 +303,7 @@ const capMesh = new THREE.Mesh(capGeometry, capMaterial);
 capMesh.renderOrder = 2;
 capMesh.castShadow = false;
 capMesh.receiveShadow = true;
-scene.add(capMesh);
+
 
 function makeStencilPass(sourceMesh, side, depthPassOp, renderOrder) {
     const mat = new THREE.MeshBasicMaterial({
@@ -278,8 +333,11 @@ function upgradeToStandard(oldMat) {
     if (newMat.map)          newMat.map.colorSpace          = THREE.SRGBColorSpace;
     if (newMat.normalMap)    newMat.normalMap.colorSpace    = THREE.NoColorSpace;
     if (newMat.roughnessMap) newMat.roughnessMap.colorSpace = THREE.NoColorSpace;
-    newMat.clippingPlanes = [roofCutPlane];
-    newMat.clipShadows = true;
+    
+    // REMOVE these two lines:
+    // newMat.clippingPlanes = [roofCutPlane];
+    // newMat.clipShadows = true;
+    
     newMat.side = THREE.DoubleSide;
     newMat.shadowSide = THREE.FrontSide;
     return newMat;
@@ -342,7 +400,7 @@ function waveHeight(x, y, t, ampScale = 1.0) {
 
 // --- INTERSECTION FOAM RENDER TARGET ---
 
-const MAX_WATER_LIGHTS = 8;
+const MAX_WATER_LIGHTS = 10;
 
 // --- OAR RIPPLES ---
 // Expanding decaying rings injected into the water surface where an oar blade
@@ -363,7 +421,8 @@ const waterUniforms = {
     uTime:           { value: 0 },
     uAmpScale:       { value: 1.0 },
     uExposure:       { value: 1.15 },   // keep in sync with renderer.toneMappingExposure
-    uBaseColor:      { value: new THREE.Color(0x041a1e) }, // Deep, near-black teal
+    uBaseColor:      { value: new THREE.Color(0x1f6f7a) }, // Bright cyan (Claude's)
+    uDeepColor:      { value: new THREE.Color(0x041a1e) }, // Dark teal (Yours)
     uAmbient:        { value: new THREE.Color(0x05080a) }, // Extremely dark ambient shadow
     uOpacity:        { value: 0.62 },
     uAmp:            { value: WAVES.map(w => w.amp) },
@@ -547,6 +606,7 @@ const waterFragment = `
     #define MAXL ${MAX_WATER_LIGHTS}
 
     uniform vec3  uBaseColor;
+    uniform vec3  uDeepColor; // <-- ADD THIS LINE
     uniform vec3  uAmbient;
     uniform float uOpacity;
     uniform float uExposure;
@@ -610,7 +670,13 @@ const waterFragment = `
 
         vec3 V = normalize(cameraPosition - vWorldPos);
         vec3 R = reflect(-V, N);                 // mirror direction for glints
-        vec3 color = uBaseColor * uAmbient;
+
+        // --- NEW OMBRE MATH ---
+        // Mix from Deep Teal to Bright Cyan based on the Y-coordinate.
+        // -8.0 is deep inside the cave, 2.0 is near the entrance.
+        vec3 ombreColor = mix(uDeepColor, uBaseColor, smoothstep(-8.0, 2.0, vWorldPos.y));
+        
+        vec3 color = ombreColor * uAmbient;
 
         for (int i = 0; i < MAXL; i++) {
             if (i >= uLightCount) break;
@@ -627,7 +693,7 @@ const waterFragment = `
             float specTight = pow(nh, 220.0);                      // crisp highlight
             float glint     = pow(max(dot(R, L), 0.0), 600.0);     // mirror-sharp sun-glitter
 
-            color += uBaseColor * uLightColor[i] * diff * atten;
+            color += ombreColor * uLightColor[i] * diff * atten; // <-- Uses ombre here too
             color += uLightColor[i] * atten * (specBroad * 0.5 + specTight * 1.4) * uSpecStrength;
             color += uLightColor[i] * atten * glint * 3.0 * uSpecStrength;
         }
@@ -667,8 +733,8 @@ const waterMaterial = new THREE.ShaderMaterial({
     transparent: true,
     toneMapped: false,   
     side: THREE.DoubleSide,
-    clipping: true,                // Turns on slicing
-    clippingPlanes: [roofCutPlane] // Defines the slice plane
+    clipping: false,                // Change this to false
+    // Remove the clippingPlanes property entirely
 });
 
 const water = new THREE.Mesh(waterGeometry, waterMaterial);
@@ -1019,8 +1085,8 @@ const clock = new THREE.Clock();
 const _capTarget = new THREE.Vector3();
 
 // ---------------- BAT SWARM ----------------
-const BAT_COUNT    = 11;                          
-const BAT_WINGSPAN = 0.6;                         
+const BAT_COUNT    = 350;                          
+const BAT_WINGSPAN = 0.15;                         
 const FLAP_AXIS = new THREE.Vector3(1, 0, 0);     
 const _flapQ = new THREE.Quaternion();           
 
@@ -1296,9 +1362,6 @@ function animate() {
         velocity.set(0, 0, 0);
     }
 
-    roofCutPlane.coplanarPoint(capMesh.position);
-    _capTarget.copy(capMesh.position).sub(roofCutPlane.normal);
-    capMesh.lookAt(_capTarget);
 
     updateHud(now);
     maybeLogPosition();
@@ -1318,20 +1381,19 @@ function animate() {
 
     const timeSec = now * 0.001;
 
+   // --- REPLACE WITH THIS ---
     // --- UNDERWATER CAMERA SENSOR ---
     // Calculate the exact wave height at the camera's location
     const camWaveHeight = waveHeight(camera.position.x, camera.position.y, timeSec, params.waveAmplitude);
     const waterSurfaceZ = -1.0 + camWaveHeight; // -1.0 is the base height of your water
 
-    if (camera.position.z < waterSurfaceZ) {
-        // We are UNDERWATER! Turn the fog dense and murky teal
-        scene.fog.color.setHex(0x1f6f7a); 
-        scene.fog.density = 0.3;          
-    } else {
-        // We are IN THE CAVE! Turn the fog back to the dark cave air
-        scene.fog.color.setHex(0x05060a); 
-        scene.fog.density = 0.015;        
-    }
+    // Ramp continuously over the first 0.5 units of submersion instead of a hard
+    // cut, so the blur/tint and fog ease in together as the camera crosses the
+    // surface rather than popping the instant z dips below waterSurfaceZ.
+    const submersion = THREE.MathUtils.clamp((waterSurfaceZ - camera.position.z) / 0.05, 0, 1);
+    setUnderwaterFactor(submersion);
+    scene.fog.color.setHex(0x05060a).lerp(_underwaterFogColor, submersion);
+    scene.fog.density = THREE.MathUtils.lerp(0.015, 0.3, submersion);
     // --------------------------------
 
     waterMaterial.uniforms.uTime.value         = timeSec;
@@ -1444,41 +1506,31 @@ function animate() {
     if (bats.length) updateBats(timeSec, dt, boatGroup.position);
 
     const intensityVariance = 4.0;
-
     const pseudoNoise = Math.sin(timeSec * 43.19) * Math.cos(timeSec * 37.81);
 
     torches.forEach((torch, index) => {
-
         const localTime = timeSec + (index * 1.5);
-
-        const flutter =
-            (0.4 * Math.sin(localTime * 2.1)) +
-            (0.3 * Math.sin(localTime * 3.7)) +
-            (0.3 * pseudoNoise);
-
+        const flutter = (0.4 * Math.sin(localTime * 2.1)) + (0.3 * Math.sin(localTime * 3.7)) + (0.3 * pseudoNoise);
         torch.intensity = params.torchIntensity + (intensityVariance * flutter);
 
-        const startX = torch.userData.startX || torch.position.x;
-        const startZ = torch.userData.startZ || torch.position.z;
-
-        if (!torch.userData.startX) {
-            torch.userData.startX = startX;
-            torch.userData.startZ = startZ;
+        // Initialize start positions if they don't exist yet
+        if (torch.userData.startX === undefined) {
+            torch.userData.startX = torch.position.x;
+            torch.userData.startZ = torch.position.z;
         }
 
-        torch.position.x = startX + (Math.sin(localTime * 15.0) * 0.02);
-        torch.position.z = startZ + (Math.cos(localTime * 17.0) * 0.02);
+        // Apply jitter relative to the saved starting positions
+        torch.position.x = torch.userData.startX + (Math.sin(localTime * 15.0) * 0.02);
+        torch.position.z = torch.userData.startZ + (Math.cos(localTime * 17.0) * 0.02);
     });
 
    // --- 1. HIDE WATER & CAP, RENDER DEPTH ---
     water.visible = false;
-    capMesh.visible = false; // Hide the slicing cap so it doesn't create a fake wall!
     renderer.setRenderTarget(depthTarget);
     renderer.render(scene, camera);
 
     // --- 2. SHOW WATER & CAP, RENDER TO SCREEN ---
     water.visible = true;
-    capMesh.visible = true;  // Bring it back for the real render!
     renderer.setRenderTarget(null);
     renderer.render(scene, camera);
     TWEEN.update();
