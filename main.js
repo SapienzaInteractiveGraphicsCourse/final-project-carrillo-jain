@@ -366,6 +366,13 @@ function upgradeToStandard(oldMat) {
     return newMat;
 }
 
+// Generated from model.jpg's own luminance (height-from-grayscale + Sobel
+// gradients), so it lines up with the cave's existing UVs with no re-unwrap
+// needed. Gives the rock actual per-pixel surface detail under the torch
+// lights instead of flat-shaded diffuse-only geometry.
+const caveNormalMap = new THREE.TextureLoader().load('./models/cave_normal.png');
+caveNormalMap.colorSpace = THREE.NoColorSpace;
+
 const mtlLoader = new MTLLoader();
 mtlLoader.load(
     './models/CaveOptimizedobj.mtl',
@@ -379,6 +386,9 @@ mtlLoader.load(
                 obj.traverse((child) => {
                     if (!child.isMesh) return;
                     child.material = upgradeToStandard(child.material);
+                    child.material.normalMap = caveNormalMap;
+                    child.material.normalScale.set(1, 1);
+                    child.material.needsUpdate = true;
                     child.castShadow = true;
                     child.receiveShadow = true;
                 });
