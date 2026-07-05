@@ -276,6 +276,7 @@ function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = 
     marker.castShadow = false;
     marker.receiveShadow = false;
     light.add(marker);
+    light.userData.marker = marker;   // hidden once the real wall-torch model attaches
     scene.add(light);
     return light;
 }
@@ -305,6 +306,232 @@ function updateActiveShadowTorches(camPos) {
         .map(t => ({ t, d: t.position.distanceToSquared(camPos) }))
         .sort((a, b) => a.d - b.d)
         .forEach(({ t }, i) => { t.castShadow = i < MAX_ACTIVE_SHADOW_TORCHES; });
+}
+
+// ---------------- WALL TORCH MODEL ----------------
+// Replaces the plain glow-sphere marker with an actual wall-mounted torch
+// (firewood + metal cage + mounting plate), decimated/retextured down from
+// the original 4K/70MB source asset (see models/torch/wall_torch.glb).
+const torchMounts = [];   // one Group per torch, so we can live-tune orientation from the GUI
+
+// Applies the live GUI-tunable orientation/scale to every mounted torch
+// model. Called once after load and again from the GUI's onChange so the
+// up-axis correction can be dialed in interactively instead of guessed
+// blind -- I can't render WebGL myself to verify it looks right.
+function updateTorchModelTransform() {
+    for (const mount of torchMounts) {
+        mount.rotation.x = THREE.MathUtils.degToRad(params.torchModelRotX);
+        mount.rotation.z = THREE.MathUtils.degToRad(params.torchModelRotZ);
+        mount.scale.setScalar(params.torchModelScale);
+    }
+    updateFlameAnchors();   // firewood moved -> re-pin the flame to it
+}
+
+const torchGltfLoader = new GLTFLoader();
+torchGltfLoader.load(
+    './models/torch/wall_torch.glb',
+    (gltf) => {
+        const source = gltf.scene;
+        source.updateMatrixWorld(true);
+
+        // Find the firewood mesh (in the model's own untouched space) so
+        // each clone can be re-centered on the torch's actual light
+        // position instead of its wall-mount pivot -- the light was
+        // authored assuming it sits where the flame is.
+        const flameWorldPos = new THREE.Vector3();
+        source.traverse((child) => {
+            if (child.name === 'Fire Wood') child.getWorldPosition(flameWorldPos);
+        });
+
+        source.traverse((child) => {
+            if (!child.isMesh) return;
+            child.castShadow = false;     // small prop -- not worth another shadow caster
+            child.receiveShadow = true;
+        });
+
+        for (const torch of torches) {
+            const mount = new THREE.Group();   // pivot = the torch's light position
+
+            const clone = source.clone(true);
+            clone.position.copy(flameWorldPos).multiplyScalar(-1);
+            mount.add(clone);
+
+            torch.add(mount);
+            torchMounts.push(mount);
+
+            // Remember the mesh the flame should sit on, so it stays pinned
+            // no matter how the model is tilted/scaled live. The fire belongs
+            // in the Metal Cage basket at the free end of the torch -- NOT the
+            // Fire Wood mesh, which on this model sits back near the wall
+            // mount. Fall back to Fire Wood only if the cage isn't found.
+            let anchorMesh = null;
+            clone.traverse((c) => { if (c.name === 'Metal Cage') anchorMesh = c; });
+            if (!anchorMesh) clone.traverse((c) => { if (c.name === 'Fire Wood') anchorMesh = c; });
+            torch.userData.woodMesh = anchorMesh;
+
+            if (torch.userData.marker) torch.userData.marker.visible = false;
+        }
+        updateTorchModelTransform();   // also runs updateFlameAnchors()
+        console.log(`Wall torch model attached to ${torchMounts.length} torches.`);
+    },
+    undefined,
+    (err) => console.error('Error loading wall torch model:', err)
+);
+
+// ---------------- TORCH FLAME + FLICKER ----------------
+// wall_torch.glb is an unlit prop -- it ships with only Fire Wood / Metal
+// Cage / Metal Plate / Torch meshes and NO flame and NO animation. Rather
+// than source a separate flame model (a static mesh flame reads as dead),
+// the flame is a single vertical quad driven by a noise-based fire shader.
+// Two deliberate choices keep it looking real:
+//   * it billboards around the world Z axis ONLY (this scene is Z-up: the
+//     water plane lies in world XY), yawing to face the camera but never
+//     rolling/pitching, so it always stands straight up instead of spinning
+//     with the camera the way a full sprite billboard does;
+//   * its pivot is at the BOTTOM of the quad, so it grows up out of the
+//     firewood instead of floating centred in front of it.
+// The flicker modulates the light's brightness + the flame's height only --
+// never the torch's position, so the physical prop never wobbles.
+const _flameGeo = new THREE.PlaneGeometry(1, 1.1, 1, 1);
+_flameGeo.translate(0, 0.55, 0);   // move pivot to the base -> flame rises upward
+_flameGeo.rotateX(Math.PI / 2);    // stand the quad up along +Z -- world up in this Z-up scene
+
+const _flameVert = `
+    varying vec2 vUv;
+    void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }`;
+const _flameFrag = `
+    precision highp float;
+    uniform float uTime;
+    uniform float uSeed;
+    uniform vec3  uCore;
+    uniform vec3  uMid;
+    uniform vec3  uEdge;
+    varying vec2  vUv;
+
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float noise(vec2 p){
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i),            hash(i + vec2(1.0, 0.0)), u.x),
+                   mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+    float fbm(vec2 p){
+        float v = 0.0, a = 0.5;
+        for (int i = 0; i < 5; i++){ v += a * noise(p); p *= 2.0; a *= 0.5; }
+        return v;
+    }
+    void main(){
+        vec2 uv = vUv;
+        float x = uv.x - 0.5;
+        float y = uv.y;
+        // upward-scrolling turbulence makes the flame lick and dance
+        float n = fbm(vec2(uv.x * 3.0 + uSeed, uv.y * 2.6 - uTime * 2.3 + uSeed));
+        // teardrop body: wide at the base, pinched to a point at the top
+        float d = abs(x) * mix(3.0, 1.6, y);
+        float flame = 1.0 - d - y * 0.5 + (n - 0.5) * 0.8;
+        flame = clamp(flame, 0.0, 1.0);
+        flame *= smoothstep(0.0, 0.12, y);   // soft foot at the wood
+        flame *= smoothstep(1.0, 0.55, y);   // fade the tip out
+        if (flame < 0.02) discard;
+        // warm orange body with a small hot core -> avoids the pale column look
+        vec3 col = mix(uEdge, uMid,  smoothstep(0.05, 0.45, flame));
+        col      = mix(col,   uCore, smoothstep(0.70, 0.98, flame));
+        gl_FragColor = vec4(col * flame * 0.9, 1.0);   // additive: brightness = shape
+    }`;
+
+const _flameWorld = new THREE.Vector3();   // scratch for the yaw billboard math
+
+function attachFlame(torch) {
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            uTime: { value: 0 },
+            uSeed: { value: Math.random() * 10.0 },
+            uCore: { value: new THREE.Color(0xffe6a0) },
+            uMid:  { value: new THREE.Color(0xff8324) },
+            uEdge: { value: new THREE.Color(0xcf300a) },
+        },
+        vertexShader:   _flameVert,
+        fragmentShader: _flameFrag,
+        transparent: true,
+        depthWrite:  false,
+        blending:    THREE.AdditiveBlending,
+        side:        THREE.DoubleSide,
+    });
+    const mesh  = new THREE.Mesh(_flameGeo, mat);
+    const group = new THREE.Group();   // holds offset/scale/yaw; parented to the light
+    group.add(mesh);
+    torch.add(group);
+    torch.userData.flame = {
+        group, mat,
+        anchor: new THREE.Vector3(),   // firewood position in the torch's local space
+        phase:  Math.random() * Math.PI * 2,
+    };
+}
+for (const torch of torches) attachFlame(torch);
+
+// Pin each flame to its torch's firewood mesh. The light itself has no
+// rotation, so worldToLocal keeps the flame world-axis-aligned (upright)
+// while still landing exactly on the wood regardless of model tilt/scale.
+// Safe to call before the model loads -- torches without a woodMesh keep a
+// zero anchor and fall back to the origin + GUI offsets.
+const _flameBox = new THREE.Box3();
+function updateFlameAnchors() {
+    scene.updateMatrixWorld(true);
+    const w = new THREE.Vector3();
+    for (const torch of torches) {
+        const wm = torch.userData.woodMesh;
+        const fl = torch.userData.flame;
+        if (!wm || !fl) continue;
+        // Use the GEOMETRY's world centre, not the node origin: on this model
+        // the cage/firewood pivots sit back by the plate while the actual
+        // basket geometry extends out to the free end, so the node origin
+        // lands the flame over the mount instead of in the basket.
+        _flameBox.setFromObject(wm);
+        _flameBox.getCenter(w);
+        torch.worldToLocal(w);
+        fl.anchor.copy(w);
+    }
+}
+
+// Per-frame update: advance the fire shader, yaw the quad to face the camera
+// (upright), and flicker brightness + height. No position is ever touched.
+function updateFlames(t) {
+    for (const torch of torches) {
+        const fl = torch.userData.flame;
+        if (!fl) continue;
+        fl.group.visible = params.flameEnabled;
+        if (!params.flameEnabled) { torch.intensity = params.torchIntensity; continue; }
+
+        fl.mat.uniforms.uTime.value = t;
+
+        // Yaw-only billboard: turn to face the camera around the world Z
+        // (vertical) axis, but never tilt -- this is what stops the flame
+        // "rotating with the camera".
+        torch.getWorldPosition(_flameWorld);
+        fl.group.rotation.set(
+            0,
+            0,
+            Math.atan2(camera.position.x - _flameWorld.x, -(camera.position.y - _flameWorld.y)),
+        );
+
+        const ph      = fl.phase;
+        const wobble  = 0.6 * Math.sin(t * 11.0 + ph) + 0.4 * Math.sin(t * 18.5 + ph * 1.7);
+        const crackle = (Math.random() - 0.5);
+        const flick   = 1 + params.flameFlicker * (wobble * 0.5 + crackle * 0.5);
+
+        torch.intensity = params.torchIntensity * Math.max(0.25, flick);   // brightness only
+
+        fl.group.position.set(
+            fl.anchor.x + params.flameOffX,
+            fl.anchor.y + params.flameOffY,
+            fl.anchor.z + params.flameOffZ,
+        );
+        const s = params.flameScale;
+        fl.group.scale.set(s, s, s * (1.0 + 0.14 * (flick - 1)));   // height breathes
+    }
 }
 
 const roofCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -1.5);
@@ -1467,6 +1694,21 @@ const params = {
     panicOarMult: 2.0,        // how much faster the oars/arms animate while fleeing
     batsReturnDelay: 2.0,     // seconds after the captain exits before the colony reappears
     captainReturnDelay: 1.5,  // seconds after the colony reappears before the captain rows back in
+    // Wall torch model orientation -- VERIFIED by headless render: the GLB
+    // is authored Y-up (handle down -Y, fire cage up +Y, wall plate facing
+    // +Z), so RotX 90 stands it upright in this Z-up scene: cage on top,
+    // handle hanging down. Sliders remain for per-taste tweaks only.
+    torchModelRotX: 90,
+    torchModelRotZ: 0,
+    torchModelScale: 1.0,
+    // Procedural flame -- offsets place the fire on the firewood, scale sizes
+    // it, flicker sets how hard the brightness/size dance (0 = steady glow).
+    flameEnabled: true,
+    flameScale: 0.4,
+    flameOffX: -0.008,
+    flameOffY: -0.106,
+    flameOffZ: 0.14,
+    flameFlicker: 0.4,
     waveAmplitude: 1.0,
     waterReflectivity: 0.9,   // fresnel sheen strength
     waterOpacity: 0.62,       // lower = clearer / more fluid, higher = denser
@@ -1492,6 +1734,15 @@ gui.add(params, 'panicBoatMult', 1, 8).name('Panic Row Speed');
 gui.add(params, 'panicOarMult', 1, 6).name('Panic Oar Speed');
 gui.add(params, 'batsReturnDelay', 0, 15).name('Bats Return Delay (s)');
 gui.add(params, 'captainReturnDelay', 0, 15).name('Captain Return Delay (s)');
+gui.add(params, 'torchModelRotX', 0, 360).name('Torch Model Tilt').onChange(updateTorchModelTransform);
+gui.add(params, 'torchModelRotZ', 0, 360).name('Torch Model Yaw').onChange(updateTorchModelTransform);
+gui.add(params, 'torchModelScale', 0.2, 3).name('Torch Model Scale').onChange(updateTorchModelTransform);
+gui.add(params, 'flameEnabled').name('Flame On');
+gui.add(params, 'flameScale', 0.1, 2).name('Flame Size');
+gui.add(params, 'flameOffX', -1, 1).name('Flame Offset X');
+gui.add(params, 'flameOffY', -1, 1).name('Flame Offset Y');
+gui.add(params, 'flameOffZ', -1, 1).name('Flame Offset Z');
+gui.add(params, 'flameFlicker', 0, 1).name('Flame Flicker');
 gui.add(params, 'waveAmplitude', 0, 3).name('Wave Amplitude');
 gui.add(params, 'waterReflectivity', 0, 2).name('Water Reflectivity');
 gui.add(params, 'waterOpacity', 0.2, 1).name('Water Density');
@@ -1629,6 +1880,8 @@ function animate() {
 
     const timeSec = now * 0.001;
 
+    updateFlames(timeSec);   // torch fire flicker (brightness + flame size only)
+
    // --- REPLACE WITH THIS ---
     // --- UNDERWATER CAMERA SENSOR ---
     // Calculate the exact wave height at the camera's location
@@ -1755,24 +2008,11 @@ function animate() {
     // --- Bat swarm: wander, flee the boat, and flap ---
     if (bats.length) updateBats(timeSec, dt, boatGroup.position);
 
-    const intensityVariance = 4.0;
-    const pseudoNoise = Math.sin(timeSec * 43.19) * Math.cos(timeSec * 37.81);
-
-    torches.forEach((torch, index) => {
-        const localTime = timeSec + (index * 1.5);
-        const flutter = (0.4 * Math.sin(localTime * 2.1)) + (0.3 * Math.sin(localTime * 3.7)) + (0.3 * pseudoNoise);
-        torch.intensity = params.torchIntensity + (intensityVariance * flutter);
-
-        // Initialize start positions if they don't exist yet
-        if (torch.userData.startX === undefined) {
-            torch.userData.startX = torch.position.x;
-            torch.userData.startZ = torch.position.z;
-        }
-
-        // Apply jitter relative to the saved starting positions
-        torch.position.x = torch.userData.startX + (Math.sin(localTime * 15.0) * 0.02);
-        torch.position.z = torch.userData.startZ + (Math.cos(localTime * 17.0) * 0.02);
-    });
+    // NOTE: the old per-frame torch position jitter + intensity flutter that
+    // used to live here (a leftover from when torches were just floating
+    // flame markers) is gone: the lights now carry the physical wall-torch
+    // model as a child, so moving the light shook the whole prop. Brightness
+    // flicker is handled by updateFlames(); positions never move.
 
     // Only the torches nearest the camera actually cast shadows this frame
     // (see updateActiveShadowTorches) -- keeps the point-light cubemap
