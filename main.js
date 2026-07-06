@@ -265,6 +265,17 @@ const riverPoints = [
 
 const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
 
+// The boat follows an EXTENDED version of the river path that reaches out
+// past the cave mouth (+Y) at both ends, so every loop it rows out of the
+// cave and back in. riverCurve itself is left unchanged, so the wall torches
+// placed along it stay exactly where they are.
+const boatPoints = [
+    new THREE.Vector3(-0.85, 7.0, -1.0),   // outside the mouth — boat enters from here
+    ...riverPoints,
+    new THREE.Vector3(-0.5,  7.0, -1.0),   // outside the mouth — boat exits to here
+];
+const boatCurve = new THREE.CatmullRomCurve3(boatPoints, false);
+
 const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
 const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false });
 const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
@@ -1981,8 +1992,8 @@ function animate() {
         boatEncounterState === 'captainAwayWait') {
         boatDir = 0;
         oarRateMult = 0;
-    } else if (boatEncounterState === 'panicking') {
-        boatDir = params.panicBoatMult;
+        } else if (boatEncounterState === 'panicking') {
+        boatDir = -params.panicBoatMult;   // negative = row straight BACK OUT the way he came in
         oarRateMult = params.panicOarMult;
     }
     rowTimeSec += dt * oarRateMult;
@@ -1990,13 +2001,18 @@ function animate() {
     if (boatDir !== 0) {
         boatProgress += dt * params.boatSpeed * boatDir;
     }
-    if (boatProgress >= 1.0) {
+    // Panic rows BACKWARD, so progress falls. Reaching 0 means he's fled all
+    // the way back out the entrance, the way he came in.
+    if (boatProgress <= 0.0) {
         boatProgress = 0.0;
-        // Wrapping back to the start while fleeing means he's made it out.
         if (boatEncounterState === 'panicking') {
             boatEncounterState = 'batsAwayWait';
             waitElapsed = 0;
         }
+    }
+    // Normal end-of-loop wrap while cruising forward.
+    if (boatProgress >= 1.0) {
+        boatProgress = 0.0;
     }
 
     const currentPos = riverCurve.getPointAt(boatProgress);
@@ -2006,9 +2022,11 @@ function animate() {
 
     boatGroup.up.set(0, 0, 1);
 
-    const lookTarget = currentPos.clone().add(currentTangent);
+        // Face the way he's actually travelling: forward while cruising, but
+    // flip to face OUTWARD while panic-rowing back out of the cave.
+    const faceSign = boatDir < 0 ? -1 : 1;
+    const lookTarget = currentPos.clone().addScaledVector(currentTangent, faceSign);
     boatGroup.lookAt(lookTarget);
-
     const timeSec = now * 0.001;
 
     updateFlames(timeSec);   // torch fire flicker (brightness + flame size only)
@@ -2046,7 +2064,10 @@ function animate() {
     const wakeAmt = THREE.MathUtils.clamp(boatWorldSpeed * 0.8, 0, 1.5) * params.waterWakeStrength;
     waterMaterial.uniforms.uBoatPos.value.set(currentPos.x, currentPos.y);
     const _tl = Math.hypot(currentTangent.x, currentTangent.y) || 1;
-    waterMaterial.uniforms.uBoatDir.value.set(currentTangent.x / _tl, currentTangent.y / _tl);
+       waterMaterial.uniforms.uBoatDir.value.set(
+        (currentTangent.x / _tl) * faceSign,
+        (currentTangent.y / _tl) * faceSign
+    );
     waterMaterial.uniforms.uBoatSpeed.value = wakeAmt;
 
     const _lp = waterMaterial.uniforms.uLightPos.value;
