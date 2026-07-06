@@ -19,6 +19,11 @@ const camera = new THREE.PerspectiveCamera(
 );
 // Start outside the cave, looking back at the entrance, so the whole
 // mouth (and the boat rowing in/out of it) is in view from the start.
+// This scene is Z-up (the water plane lies in world XY, so "up" is +Z).
+// Set that BEFORE lookAt — otherwise lookAt uses the default +Y up and rolls
+// the horizon on load (the tilt you saw). PointerLockControls re-levels it the
+// moment you click, which is why only the load view looked tilted.
+camera.up.set(0, 0, 1);
 camera.position.set(2.2, 11.5, 2.2);
 camera.lookAt(-0.2, 2.0, -0.6);
 
@@ -1212,6 +1217,7 @@ scene.add(boatGroup);
 const BOAT_LENGTH  = 1.1;           
 const BOAT_HEADING = 0;              
 const BOAT_FLOAT   = 0.12;          
+const BOAT_HIDE_Y  = 5.5;   // rowed out past the mouth into the dark -> hide him until he returns
 const WORLD_UP   = new THREE.Vector3(0, 0, 1);  
 const OAR_L_SIGN = +1;
 const OAR_R_SIGN = -1;              
@@ -1963,9 +1969,9 @@ function animate() {
         const a = 1 - Math.exp(-SMOOTHING * dt);
         velocity.lerp(targetVel, a);
 
-        controls.moveRight(velocity.x * dt);
+                controls.moveRight(velocity.x * dt);
         controls.moveForward(velocity.z * dt);
-        camera.position.y += velocity.y * dt;
+        camera.position.z += velocity.y * dt;   // Space/Shift = vertical, now that up is +Z
     } else {
         velocity.set(0, 0, 0);
     }
@@ -2064,11 +2070,15 @@ function animate() {
         boatProgress = 0.0;
     }
 
-    const currentPos = boatCurve.getPointAt(boatProgress);
+        const currentPos = boatCurve.getPointAt(boatProgress);
     const currentTangent = boatCurve.getTangentAt(boatProgress).normalize();
 
     boatGroup.position.copy(currentPos);
 
+    // Vanish once he's rowed out past the mouth into the dark; reappears
+    // when he rows back in (and stays hidden through the bat-scare wait,
+    // since he's parked out there at the far end of the path).
+    boatGroup.visible = currentPos.y < BOAT_HIDE_Y;
     boatGroup.up.set(0, 0, 1);
 
         // Face the way he's actually travelling: forward while cruising, but
