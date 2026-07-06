@@ -1217,7 +1217,7 @@ scene.add(boatGroup);
 const BOAT_LENGTH  = 1.1;           
 const BOAT_HEADING = 0;              
 const BOAT_FLOAT   = 0.12;          
-const BOAT_HIDE_Y  = 5.5;   // rowed out past the mouth into the dark -> hide him until he returns
+const BOAT_HIDE_Y  = 9.5;   // rowed out past the mouth into the dark -> hide him until he returns
 const WORLD_UP   = new THREE.Vector3(0, 0, 1);  
 const OAR_L_SIGN = +1;
 const OAR_R_SIGN = -1;              
