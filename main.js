@@ -17,8 +17,10 @@ const camera = new THREE.PerspectiveCamera(
     0.05,
     1000
 );
-camera.position.set(1.64, -0.78, -0.32);
-camera.lookAt(1.61, -2.56, -0.25);
+// Start outside the cave, looking back at the entrance, so the whole
+// mouth (and the boat rowing in/out of it) is in view from the start.
+camera.position.set(2.2, 11.5, 2.2);
+camera.lookAt(-0.2, 2.0, -0.6);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -269,12 +271,24 @@ const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
 // past the cave mouth (+Y) at both ends, so every loop it rows out of the
 // cave and back in. riverCurve itself is left unchanged, so the wall torches
 // placed along it stay exactly where they are.
+// The open water gap at the entrance cut plane (y=4) spans roughly
+// x -0.6..1.8 at boat height, so the transit through the mouth is routed
+// near the middle of that gap instead of hugging the left rock wall.
 const boatPoints = [
-    new THREE.Vector3(-0.85, 7.0, -1.0),   // outside the mouth — boat enters from here
+    new THREE.Vector3( 0.4, 14.0, -1.0),   // fully outside the scene — boat enters from here
+    new THREE.Vector3( 0.4,  7.5, -1.0),   // straight run-up toward the opening
+    new THREE.Vector3(-0.1,  3.9, -1.0),   // centered in the mouth as he crosses the entrance
     ...riverPoints,
-    new THREE.Vector3(-0.5,  7.0, -1.0),   // outside the mouth — boat exits to here
+    new THREE.Vector3( 0.1,  4.0, -1.0),   // back out through the middle of the opening
+    new THREE.Vector3( 0.5,  7.5, -1.0),
+    new THREE.Vector3( 0.5, 14.0, -1.0),   // fully outside the scene — boat exits to here
 ];
 const boatCurve = new THREE.CatmullRomCurve3(boatPoints, false);
+
+// The boat path is much longer than the river path (it reaches way outside
+// the scene at both ends). Scale progress speed so his rowing pace in world
+// units stays the same as before.
+const BOAT_SPEED_SCALE = riverCurve.getLength() / boatCurve.getLength();
 
 const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
 const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false });
@@ -1038,12 +1052,18 @@ const waterFragment = `
         
         vec3 color = ombreColor * uAmbient;
 
+        // All the torch lights live INSIDE the cave, but this loop has no
+        // occlusion -- without a mask it lights water OUTSIDE the mouth
+        // straight through the rock walls. Fade their contribution to zero
+        // across the entrance cut (y ~4) so no light bleeds past the cave.
+        float caveMask = 1.0 - smoothstep(3.0, 4.2, vWorldPos.y);
+
         for (int i = 0; i < MAXL; i++) {
             if (i >= uLightCount) break;
             vec3  toL   = uLightPos[i] - vWorldPos;
             float dist  = length(toL);
             vec3  L     = toL / max(dist, 0.0001);
-            float atten = uLightIntensity[i] / (1.0 + dist * dist);
+            float atten = uLightIntensity[i] / (1.0 + dist * dist) * caveMask;
 
             float diff = max(dot(N, L), 0.0);
             vec3  Hh   = normalize(L + V);
@@ -1502,8 +1522,12 @@ fireflies.frustumCulled = false;
 scene.add(fireflies);
 
 // ---------------- BAT SWARM ----------------
-const BAT_COUNT    = 500;                          
-const BAT_WINGSPAN = 0.15;                         
+// Every bat is its own skinned-mesh clone (one draw call + one skeleton
+// update each, per render pass), so the count is the single biggest perf
+// lever. Fewer-but-bigger bats read as the same swarm for a fraction of
+// the cost.
+const BAT_COUNT    = 350;
+const BAT_WINGSPAN = 0.32;
 const FLAP_AXIS = new THREE.Vector3(1, 0, 0);     
 const _flapQ = new THREE.Quaternion();           
 
@@ -1514,7 +1538,10 @@ const _flapQ = new THREE.Quaternion();
 const ROOST_MIN = new THREE.Vector3(-2.5, -11.0, -0.85);
 const ROOST_MAX = new THREE.Vector3( 2.5,  -8.0,  0.35);
 const ROOST_CENTER = new THREE.Vector3().addVectors(ROOST_MIN, ROOST_MAX).multiplyScalar(0.5);
-const EXIT_Y       = 4.0;
+const EXIT_Y       = 4.0;    // the entrance cut plane -- "past the mouth" threshold
+const BAT_GONE_Y   = 16.0;   // fully outside the scene -- despawn fleeing bats here,
+                             // NOT at the cut plane, so they visibly fly off instead
+                             // of popping out of existence right at the opening
 const FLEE_RADIUS  = 4.0;
 const FLEE_SPEED   = 7.0;
 const STEER_FORCE  = 3.0;
@@ -1595,9 +1622,12 @@ function startBatReturn(bat) {
         THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random())
     );
     bat.root.position.set(
-        (Math.random() - 0.5) * 3.0,
-        EXIT_Y + 0.5 + Math.random() * 2.5,
-        THREE.MathUtils.lerp(-0.85, 1.3, Math.random())
+        // spawn band aligned with the cave opening (x ~ -0.6..1.8) so they
+        // fly IN through the mouth instead of clipping the walls beside it,
+        // and fully outside the scene so they don't pop into view midair
+        0.3 + (Math.random() - 0.5) * 1.6,
+        BAT_GONE_Y - 2.0 + Math.random() * 3.0,
+        THREE.MathUtils.lerp(0.2, 1.3, Math.random())
     );
     bat.root.visible = true;
     // Give it an initial shove back into the cave (-Y) so it doesn't start
@@ -1618,6 +1648,13 @@ function findBone(root, targetName) {
 }
 
 const bats = [];   // populated once the model loads
+
+// All bat roots live under one group so the whole swarm can be hidden in a
+// single toggle during the water-refraction depth pre-pass (bats are tiny
+// and airborne -- they contribute nothing visible to the water's depth
+// buffer, but skinning them twice per frame was half their render cost).
+const batsGroup = new THREE.Group();
+scene.add(batsGroup);
 
 const gltfLoader = new GLTFLoader();
 gltfLoader.load(
@@ -1654,7 +1691,7 @@ gltfLoader.load(
             const model = cloneSkeleton(source);    // deep clone incl. skeleton
             root.add(model);
 
-            scene.add(root);
+            batsGroup.add(root);
 
             const bones = {
                 armL:  findBone(model, 'arm1.L_Armature'),
@@ -1743,11 +1780,21 @@ function updateBats(timeSec, dt, boatPos) {
         if (bat.state === 'flee') {
             bat.fleeing = 1;
 
-            // steer toward a cruise velocity heading out of the cave: mostly +Y
-            // (toward the observer), fanned sideways, and only a slight lift --
-            // kept low so the swarm stays near the water instead of climbing
-            // up toward the ceiling where it's hard to see.
-            _batTmp2.set(bat.spread, 1.0, 0.05).normalize().multiplyScalar(FLEE_SPEED);
+            if (p.y < 3.5) {
+                // Inside the cave: steer toward a per-bat slot in the CAVE
+                // OPENING rather than a fixed +Y fan -- the old fan sent the
+                // outer bats straight into the rock walls near the mouth.
+                // The opening at bat height is roughly x -0.6..1.8, so slots
+                // at 0.3 +/- spread*0.9 keep the whole stream inside it.
+                // z 0.5 keeps them ABOVE the wave crests (water base -1 with
+                // amplitude 1.0 -> crests reach z ~0) but under the arch.
+                _batTmp2.set(0.3 + bat.spread * 0.9, EXIT_Y + 0.5, 0.5).sub(p);
+                _batTmp2.normalize().multiplyScalar(FLEE_SPEED);
+            } else {
+                // Clear of the mouth: no more walls, fan outward and keep
+                // flying away until fully outside the scene.
+                _batTmp2.set(bat.spread, 1.0, 0.1).normalize().multiplyScalar(FLEE_SPEED);
+            }
             _batTmp2.sub(bat.vel).multiplyScalar(STEER_FORCE);
             _batAcc.add(_batTmp2);
 
@@ -1757,8 +1804,8 @@ function updateBats(timeSec, dt, boatPos) {
                 _batAcc.add(_batTmp);
             }
 
-            // left the scene behind the observer -> gone for good, hide and stop
-            if (p.y > EXIT_Y) { bat.state = 'gone'; bat.root.visible = false; continue; }
+            // fully outside the scene -> gone for good, hide and stop
+            if (p.y > BAT_GONE_Y) { bat.state = 'gone'; bat.root.visible = false; continue; }
         } else if (bat.state === 'return') {
             bat.fleeing = 1;
 
@@ -1792,9 +1839,11 @@ function updateBats(timeSec, dt, boatPos) {
             p.y = THREE.MathUtils.clamp(p.y, ROOST_MIN.y, ROOST_MAX.y);
             p.z = THREE.MathUtils.clamp(p.z, ROOST_MIN.z, ROOST_MAX.z);
         } else {
-            // Fleeing bats stay low and close to the water rather than
-            // climbing toward the ceiling.
-            p.z = THREE.MathUtils.clamp(p.z, -0.85, 1.3);
+            // Flying bats stay low over the water rather than climbing
+            // toward the ceiling. Fleeing bats never dip below the wave
+            // crests (z ~0 with amplitude 1.0); returning bats may descend
+            // further so they can land on the lower roost spots.
+            p.z = THREE.MathUtils.clamp(p.z, bat.state === 'flee' ? 0.05 : -0.85, 1.3);
         }
 
         // face direction of travel
@@ -1999,7 +2048,7 @@ function animate() {
     rowTimeSec += dt * oarRateMult;
 
     if (boatDir !== 0) {
-        boatProgress += dt * params.boatSpeed * boatDir;
+        boatProgress += dt * params.boatSpeed * BOAT_SPEED_SCALE * boatDir;
     }
     // Panic rows BACKWARD, so progress falls. Reaching 0 means he's fled all
     // the way back out the entrance, the way he came in.
@@ -2015,8 +2064,8 @@ function animate() {
         boatProgress = 0.0;
     }
 
-    const currentPos = riverCurve.getPointAt(boatProgress);
-    const currentTangent = riverCurve.getTangentAt(boatProgress).normalize();
+    const currentPos = boatCurve.getPointAt(boatProgress);
+    const currentTangent = boatCurve.getTangentAt(boatProgress).normalize();
 
     boatGroup.position.copy(currentPos);
 
@@ -2178,11 +2227,13 @@ function animate() {
     // point-light cubemap passes a second time.
     renderer.shadowMap.needsUpdate = true;
     water.visible = false;
+    batsGroup.visible = false;   // swarm skipped in the depth pre-pass (see batsGroup)
     renderer.setRenderTarget(depthTarget);
     renderer.render(scene, camera);
 
     // --- 2. SHOW WATER & CAP, RENDER TO SCREEN ---
     water.visible = true;
+    batsGroup.visible = true;
     renderer.setRenderTarget(null);
     renderer.render(scene, camera);
     TWEEN.update();
