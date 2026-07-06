@@ -248,6 +248,41 @@ skyShaft.position.set(2.5, 4.0, 3.0);
 skyShaft.target.position.set(-0.5, -4.0, -0.5);
 scene.add(skyShaft, skyShaft.target);
 
+const riverPoints = [
+
+    new THREE.Vector3( -1.2,   3.0, -1.0),
+    new THREE.Vector3( -0.6,   0.0, -1.0),
+    new THREE.Vector3( -1.9,  -3.5, -1.0),
+    new THREE.Vector3( -0.6,  -7.0, -1.0),
+    new THREE.Vector3( -0.9, -10.0, -1.0),
+
+    new THREE.Vector3( -0.7, -11.0, -1.0),
+
+    new THREE.Vector3( -0.5, -10.0, -1.0),
+    new THREE.Vector3( -0.5,  -3.5, -1.0),
+    new THREE.Vector3( -0.5,   3.0, -1.0)
+];
+
+const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
+
+const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
+const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false });
+const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
+scene.add(visiblePath);
+
+// Hide the cyan debug tube that marks the river path (set true to show it again).
+visiblePath.visible = false;
+
+function wallTorchPlacement(progress, side, wallDist, z) {
+    const p = riverCurve.getPointAt(progress);
+    const tangent = riverCurve.getTangentAt(progress).normalize();
+    const perp = new THREE.Vector2(-tangent.y, tangent.x).normalize();
+    const outward = perp.multiplyScalar(side);
+    const pos = new THREE.Vector3(p.x + outward.x * wallDist, p.y + outward.y * wallDist, z);
+    const facing = outward.clone().multiplyScalar(-1);
+    return { pos, facing };
+}
+
 function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = false } = {}) {
     const light = new THREE.PointLight(color, intensity, 25, 2);
     light.position.copy(position);
@@ -281,17 +316,19 @@ function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = 
     return light;
 }
 
-const torches = [
-    // Cave mouth / approach only -- spread apart so each one lights a
-    // distinct pocket of the entrance instead of one overlapping pool.
-    // Everything past here (mid cave + the bat roost, y < -5 or so) is
-    // still unlit on purpose: it hides the bats' lack of a proper idle
-    // animation while roosting, and gives the "flies out of pitch
-    // darkness" scare more contrast.
-    createTorch(new THREE.Vector3( 1.90,  2.30, 1.15), { castShadow: false }),
-    createTorch(new THREE.Vector3(-2.40,  0.90, 0.70), { castShadow: false }),
-    createTorch(new THREE.Vector3( 0.20, -3.60, 1.10), { castShadow: false }),
+// NEW TORCH LAYOUT (Replace the deleted lines with these)
+const TORCH_LAYOUT = [
+    { progress: 0.04, side: -1 },
+    { progress: 0.13, side:  1 },
+    { progress: 0.24, side: -1 },
 ];
+const TORCH_WALL_DIST_DEFAULT = 2.2;
+const TORCH_HEIGHT_DEFAULT = 1.1;
+
+const torches = TORCH_LAYOUT.map(({ progress, side }) => {
+    const { pos, facing } = wallTorchPlacement(progress, side, TORCH_WALL_DIST_DEFAULT, TORCH_HEIGHT_DEFAULT);
+    return createTorch(pos, { castShadow: false, facing });
+});
 
 // Every point-light shadow (cube map) costs 6 full scene renders, so this
 // stays in place as a safety net even though neither remaining torch is a
@@ -306,6 +343,43 @@ function updateActiveShadowTorches(camPos) {
         .map(t => ({ t, d: t.position.distanceToSquared(camPos) }))
         .sort((a, b) => a.d - b.d)
         .forEach(({ t }, i) => { t.castShadow = i < MAX_ACTIVE_SHADOW_TORCHES; });
+}
+
+// ---- Mount the torches on the actual cave wall (via raycast) ----
+const _torchRay = new THREE.Raycaster();
+_torchRay.far = 20;
+let caveRoot = null;   // set once the cave OBJ has loaded
+
+function mountTorchesOnWall() {
+    if (!caveRoot) return;
+
+    TORCH_LAYOUT.forEach(({ progress, side }, i) => {
+        const torch = torches[i];
+        const p = riverCurve.getPointAt(progress);
+        const tangent = riverCurve.getTangentAt(progress).normalize();
+
+        // direction from the river path outward toward the wall (XY plane)
+        const outward = new THREE.Vector3(-tangent.y, tangent.x, 0)
+            .multiplyScalar(side).normalize();
+
+        // shoot a ray from the path, at torch height, straight at the wall
+        const origin = new THREE.Vector3(p.x, p.y, TORCH_HEIGHT_DEFAULT);
+        _torchRay.set(origin, outward);
+
+        const hits = _torchRay.intersectObject(caveRoot, true);
+        if (!hits.length) {
+            console.warn(`Torch ${i}: no wall hit — left at default spot`);
+            return;
+        }
+
+        // pull the torch slightly off the rock so the model doesn't sink in
+        torch.position.copy(hits[0].point).addScaledVector(outward, -0.12);
+
+        // rotate it so the mounting plate lies flat against the wall
+        torch.rotation.set(0, 0, Math.atan2(-outward.x, outward.y));
+    });
+
+    updateFlameAnchors();   // re-pin the flames to the moved torches
 }
 
 // ---------------- WALL TORCH MODEL ----------------
@@ -534,7 +608,33 @@ function updateFlames(t) {
     }
 }
 
+// --- REPLACE YOUR EXISTING CLIPPING PLANE LOGIC ---
+const ENTRANCE_CUT_Y_DEFAULT = 4.0;
+const entranceCut = new THREE.Plane(new THREE.Vector3(0, -1, 0), ENTRANCE_CUT_Y_DEFAULT);
 const roofCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -1.5);
+
+function upgradeToStandard(oldMat) {
+    const newMat = new THREE.MeshStandardMaterial({
+        color: oldMat.color ? oldMat.color.clone() : new THREE.Color(0x888888),
+        map:          oldMat.map        || null,
+        normalMap:    oldMat.normalMap  || oldMat.bumpMap || null,
+        roughnessMap: oldMat.roughnessMap || null,
+        roughness: 0.9, metalness: 0.05,
+    });
+    
+    if (newMat.map)          newMat.map.colorSpace          = THREE.SRGBColorSpace;
+    if (newMat.normalMap)    newMat.normalMap.colorSpace    = THREE.NoColorSpace;
+    if (newMat.roughnessMap) newMat.roughnessMap.colorSpace = THREE.NoColorSpace;
+    
+    newMat.side = THREE.DoubleSide;
+    newMat.shadowSide = THREE.FrontSide;
+    
+    // This is the new logic that slices the cave entrance
+    newMat.clippingPlanes = [entranceCut]; 
+    newMat.clipShadows = true;
+    
+    return newMat;
+}
 
 const capGeometry = new THREE.PlaneGeometry(2000, 2000);
 const capMaterial = new THREE.MeshStandardMaterial({
@@ -572,26 +672,6 @@ function makeStencilPass(sourceMesh, side, depthPassOp, renderOrder) {
     return stencilMesh;
 }
 
-function upgradeToStandard(oldMat) {
-    const newMat = new THREE.MeshStandardMaterial({
-        color: oldMat.color ? oldMat.color.clone() : new THREE.Color(0x888888),
-        map:          oldMat.map        || null,
-        normalMap:    oldMat.normalMap  || oldMat.bumpMap || null,
-        roughnessMap: oldMat.roughnessMap || null,
-        roughness: 0.9, metalness: 0.05,
-    });
-    if (newMat.map)          newMat.map.colorSpace          = THREE.SRGBColorSpace;
-    if (newMat.normalMap)    newMat.normalMap.colorSpace    = THREE.NoColorSpace;
-    if (newMat.roughnessMap) newMat.roughnessMap.colorSpace = THREE.NoColorSpace;
-    
-    // REMOVE these two lines:
-    // newMat.clippingPlanes = [roofCutPlane];
-    // newMat.clipShadows = true;
-    
-    newMat.side = THREE.DoubleSide;
-    newMat.shadowSide = THREE.FrontSide;
-    return newMat;
-}
 
 // Generated from model.jpg's own luminance (height-from-grayscale + Sobel
 // gradients), so it lines up with the cave's existing UVs with no re-unwrap
@@ -628,8 +708,10 @@ mtlLoader.load(
                     const frontPass = makeStencilPass(child, THREE.FrontSide, THREE.DecrementWrapStencilOp, 1);
                     stencilPassGroup.add(backPass, frontPass);
                 });
-                scene.add(obj);
+                                scene.add(obj);
                 scene.add(stencilPassGroup);
+                caveRoot = obj;             // remember the cave for raycasting
+                mountTorchesOnWall();       // snap the torches onto the wall
                 console.log('Cave loaded. Stencil cap passes:', stencilPassGroup.children.length);
             },
             (xhr)   => console.log((xhr.loaded / xhr.total * 100).toFixed(1) + '% loaded OBJ'),
@@ -1090,30 +1172,7 @@ function processOarRipple(oar, state, t, ampScale) {
     state.down = submerged;
 }
 
-const riverPoints = [
 
-    new THREE.Vector3( -1.2,   3.0, -1.0),
-    new THREE.Vector3( -0.6,   0.0, -1.0),
-    new THREE.Vector3( -1.9,  -3.5, -1.0),
-    new THREE.Vector3( -0.6,  -7.0, -1.0),
-    new THREE.Vector3( -0.9, -10.0, -1.0),
-
-    new THREE.Vector3( -0.7, -11.0, -1.0),
-
-    new THREE.Vector3( -0.5, -10.0, -1.0),
-    new THREE.Vector3( -0.5,  -3.5, -1.0),
-    new THREE.Vector3( -0.5,   3.0, -1.0)
-];
-
-const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
-
-const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
-const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false });
-const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
-scene.add(visiblePath);
-
-// Hide the cyan debug tube that marks the river path (set true to show it again).
-visiblePath.visible = false;
 
 const boatGroup = new THREE.Group();
 scene.add(boatGroup);
@@ -1358,6 +1417,78 @@ window.addEventListener('resize', () => {
 
 const clock = new THREE.Clock();
 const _capTarget = new THREE.Vector3();
+
+// ---------------- FIREFLIES ----------------
+// ---------------- FIREFLIES ----------------
+const FIREFLY_COUNT = 45;
+const fireflyPositions = new Float32Array(FIREFLY_COUNT * 3);
+const fireflyPhase     = new Float32Array(FIREFLY_COUNT);
+const fireflySeed      = new Float32Array(FIREFLY_COUNT * 3);
+
+for (let i = 0; i < FIREFLY_COUNT; i++) {
+    fireflyPositions[i * 3 + 0] = (Math.random() - 0.5) * 8;
+    fireflyPositions[i * 3 + 1] = (Math.random() - 0.5) * 15;
+    fireflyPositions[i * 3 + 2] = Math.random() * 2;
+    fireflyPhase[i] = Math.random() * Math.PI * 2;
+    fireflySeed[i * 3 + 0] = Math.random() * 100;
+    fireflySeed[i * 3 + 1] = Math.random() * 100;
+    fireflySeed[i * 3 + 2] = Math.random() * 100;
+}
+
+const fireflyGeometry = new THREE.BufferGeometry();
+fireflyGeometry.setAttribute('position', new THREE.BufferAttribute(fireflyPositions, 3));
+fireflyGeometry.setAttribute('aPhase', new THREE.BufferAttribute(fireflyPhase, 1));
+fireflyGeometry.setAttribute('aSeed', new THREE.BufferAttribute(fireflySeed, 3));
+
+const fireflyUniforms = {
+    uTime:  { value: 0 },
+    uColor: { value: new THREE.Color(0xb6ff6e) },
+    uSize:  { value: 60.0 },
+};
+
+const fireflyVertex = `
+    uniform float uTime;
+    uniform float uSize;
+    attribute float aPhase;
+    attribute vec3  aSeed;
+    varying float vGlow;
+    float wander(float t, float seed) {
+        return sin(t * 0.6 + seed) * 0.5 + sin(t * 1.3 + seed * 2.1) * 0.3;
+    }
+    void main() {
+        vec3 p = position;
+        p.x += wander(uTime, aSeed.x) * 0.6;
+        p.y += wander(uTime, aSeed.y) * 0.6;
+        p.z += wander(uTime * 0.8, aSeed.z) * 0.35;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        vGlow = 0.5 + 0.5 * sin(uTime * 2.2 + aPhase);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = uSize * (1.0 / -mv.z) * (0.6 + 0.4 * vGlow);
+    }`;
+
+const fireflyFragment = `
+    uniform vec3 uColor;
+    varying float vGlow;
+    void main() {
+        vec2 uv = gl_PointCoord - 0.5;
+        float d = length(uv);
+        float core = smoothstep(0.5, 0.0, d);
+        if (core < 0.02) discard;
+        gl_FragColor = vec4(uColor * (0.6 + vGlow), core * core);
+    }`;
+
+const fireflyMaterial = new THREE.ShaderMaterial({
+    uniforms: fireflyUniforms,
+    vertexShader: fireflyVertex,
+    fragmentShader: fireflyFragment,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+});
+
+const fireflies = new THREE.Points(fireflyGeometry, fireflyMaterial);
+fireflies.frustumCulled = false; 
+scene.add(fireflies);
 
 // ---------------- BAT SWARM ----------------
 const BAT_COUNT    = 500;                          
@@ -1881,6 +2012,7 @@ function animate() {
     const timeSec = now * 0.001;
 
     updateFlames(timeSec);   // torch fire flicker (brightness + flame size only)
+    fireflyUniforms.uTime.value = timeSec;
 
    // --- REPLACE WITH THIS ---
     // --- UNDERWATER CAMERA SENSOR ---
