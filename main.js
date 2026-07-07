@@ -280,13 +280,13 @@ const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
 // x -0.6..1.8 at boat height, so the transit through the mouth is routed
 // near the middle of that gap instead of hugging the left rock wall.
 const boatPoints = [
-    new THREE.Vector3( 0.4, 14.0, -1.0),   // fully outside the scene — boat enters from here
+    new THREE.Vector3( 0.4, 20.0, -1.0),   // edge of the map (water ends at y=20) — boat enters from here
     new THREE.Vector3( 0.4,  7.5, -1.0),   // straight run-up toward the opening
     new THREE.Vector3(-0.1,  3.9, -1.0),   // centered in the mouth as he crosses the entrance
     ...riverPoints,
     new THREE.Vector3( 0.1,  4.0, -1.0),   // back out through the middle of the opening
     new THREE.Vector3( 0.5,  7.5, -1.0),
-    new THREE.Vector3( 0.5, 14.0, -1.0),   // fully outside the scene — boat exits to here
+    new THREE.Vector3( 0.5, 20.0, -1.0),   // edge of the map — boat exits to here
 ];
 const boatCurve = new THREE.CatmullRomCurve3(boatPoints, false);
 
@@ -510,6 +510,7 @@ const _flameFrag = `
     precision highp float;
     uniform float uTime;
     uniform float uSeed;
+    uniform float uFlick;
     uniform vec3  uCore;
     uniform vec3  uMid;
     uniform vec3  uEdge;
@@ -522,28 +523,46 @@ const _flameFrag = `
         return mix(mix(hash(i),            hash(i + vec2(1.0, 0.0)), u.x),
                    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
     }
+    // 4 octaves x2 calls (domain warp) ~= the old 5-octave single call in
+    // cost, but the warped turbulence reads as real licking tongues instead
+    // of a scrolling texture.
     float fbm(vec2 p){
         float v = 0.0, a = 0.5;
-        for (int i = 0; i < 5; i++){ v += a * noise(p); p *= 2.0; a *= 0.5; }
+        for (int i = 0; i < 4; i++){ v += a * noise(p); p *= 2.03; a *= 0.5; }
         return v;
     }
     void main(){
-        vec2 uv = vUv;
-        float x = uv.x - 0.5;
-        float y = uv.y;
-        // upward-scrolling turbulence makes the flame lick and dance
-        float n = fbm(vec2(uv.x * 3.0 + uSeed, uv.y * 2.6 - uTime * 2.3 + uSeed));
-        // teardrop body: wide at the base, pinched to a point at the top
-        float d = abs(x) * mix(3.0, 1.6, y);
-        float flame = 1.0 - d - y * 0.5 + (n - 0.5) * 0.8;
+        float y = vUv.y;
+
+        // the whole flame sways, more toward the free tip, none at the wood
+        float sway = (noise(vec2(uSeed * 7.3, y * 1.4 - uTime * 1.6)) - 0.5)
+                   * 0.38 * smoothstep(0.05, 0.9, y);
+        float x = vUv.x - 0.5 - sway;
+
+        // domain-warped upward-scrolling turbulence
+        vec2  q = vec2(x * 3.2 + uSeed, y * 2.1 - uTime * 2.5);
+        float w = fbm(q + vec2(0.0, -uTime * 0.7) + uSeed);
+        float n = fbm(q + 1.7 * vec2(w, w * 0.6));
+
+        // teardrop body: wide at the base, pinched hard at the tip so licks
+        // detach into separate tongues instead of one blunt column
+        float d = abs(x) * mix(2.4, 6.0, y * y);
+        float flame = 1.0 - d - y * 0.55 + (n - 0.5) * 1.15;
         flame = clamp(flame, 0.0, 1.0);
-        flame *= smoothstep(0.0, 0.12, y);   // soft foot at the wood
-        flame *= smoothstep(1.0, 0.55, y);   // fade the tip out
+        flame *= smoothstep(0.0, 0.10, y);    // soft foot at the wood
+        flame *= smoothstep(1.05, 0.45, y);   // fade the tip out
         if (flame < 0.02) discard;
-        // warm orange body with a small hot core -> avoids the pale column look
-        vec3 col = mix(uEdge, uMid,  smoothstep(0.05, 0.45, flame));
-        col      = mix(col,   uCore, smoothstep(0.70, 0.98, flame));
-        gl_FragColor = vec4(col * flame * 0.9, 1.0);   // additive: brightness = shape
+
+        // white-hot heart low in the flame, independent of the licky body,
+        // so the base always reads hot even when a tongue breaks away above
+        float core = clamp(1.0 - abs(x) * mix(5.0, 12.0, y) - y * 1.35 + (n - 0.5) * 0.35, 0.0, 1.0);
+
+        vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.55, flame));
+        col      = mix(col,  uCore, smoothstep(0.35, 0.85, core));
+        col      = mix(col,  vec3(1.0, 0.98, 0.90), smoothstep(0.80, 1.0, core));
+
+        // brightness breathes with the same flicker driving the point light
+        gl_FragColor = vec4(col * flame * (0.72 + 0.28 * uFlick), 1.0);   // additive: brightness = shape
     }`;
 
 const _flameWorld = new THREE.Vector3();   // scratch for the yaw billboard math
@@ -553,6 +572,7 @@ function attachFlame(torch) {
         uniforms: {
             uTime: { value: 0 },
             uSeed: { value: Math.random() * 10.0 },
+            uFlick: { value: 1.0 },
             uCore: { value: new THREE.Color(0xffe6a0) },
             uMid:  { value: new THREE.Color(0xff8324) },
             uEdge: { value: new THREE.Color(0xcf300a) },
@@ -572,6 +592,7 @@ function attachFlame(torch) {
         group, mat,
         anchor: new THREE.Vector3(),   // firewood position in the torch's local space
         phase:  Math.random() * Math.PI * 2,
+        crackle: 0,                    // low-passed random -> no frame-rate strobe
     };
 }
 for (const torch of torches) attachFlame(torch);
@@ -623,10 +644,14 @@ function updateFlames(t) {
 
         const ph      = fl.phase;
         const wobble  = 0.6 * Math.sin(t * 11.0 + ph) + 0.4 * Math.sin(t * 18.5 + ph * 1.7);
-        const crackle = (Math.random() - 0.5);
-        const flick   = 1 + params.flameFlicker * (wobble * 0.5 + crackle * 0.5);
+        // low-pass the random crackle: a fresh Math.random() every frame
+        // strobes at frame rate; chasing a random target instead gives the
+        // slower gutter-and-recover rhythm of a real flame
+        fl.crackle += ((Math.random() - 0.5) - fl.crackle) * 0.12;
+        const flick   = 1 + params.flameFlicker * (wobble * 0.5 + fl.crackle * 1.5);
 
         torch.intensity = params.torchIntensity * Math.max(0.25, flick);   // brightness only
+        fl.mat.uniforms.uFlick.value = THREE.MathUtils.clamp(flick, 0.4, 1.6);
 
         fl.group.position.set(
             fl.anchor.x + params.flameOffX,
@@ -1259,6 +1284,12 @@ fbxLoader.load(
             if (!child.isMesh) return;
             child.castShadow = true;
             child.receiveShadow = true;
+            // Same fix as the captain below: the hull/oar bounding spheres
+            // don't track where the model visually is once it's driven far
+            // along the river path, so the frustum culler was blinking the
+            // whole boat out of existence at a certain point on the way out
+            // while the oar wake (a water-shader effect) kept going.
+            child.frustumCulled = false;
             const src = Array.isArray(child.material) ? child.material[0] : child.material;
             const tex = src && src.map ? src.map : null;
             if (tex) tex.colorSpace = THREE.SRGBColorSpace;
@@ -1876,7 +1907,7 @@ function updateBats(timeSec, dt, boatPos) {
 }
 
 const params = {
-    boatSpeed: 0.05,
+    boatSpeed: 0.035,       // cruising pace (world speed also depends on BOAT_SPEED_SCALE)
     oarSpeed: 2.5,
     oarAmplitude: 0.4,
     oarLift: 0.36,          // comparable to the sweep -> the stroke traces a circle, not a flat line
@@ -1887,7 +1918,9 @@ const params = {
     seatHeight: 0.12,       // captain hip height in boat-local +Y (raise so he sits on, not through, the hull)
     flapSpeed: 15.0,
     torchIntensity: 20.0,
-    panicBoatMult: 3.0,       // how much faster than boatSpeed the captain rows while fleeing
+    panicBoatMult: 4.3,       // how much faster than boatSpeed while fleeing -- raised when
+                              // boatSpeed dropped 0.05 -> 0.035 so the ABSOLUTE flee speed
+                              // stays the same as before (0.05 * 3.0 ~= 0.035 * 4.3)
     panicOarMult: 2.0,        // how much faster the oars/arms animate while fleeing
     batsReturnDelay: 2.0,     // seconds after the captain exits before the colony reappears
     captainReturnDelay: 1.5,  // seconds after the colony reappears before the captain rows back in
