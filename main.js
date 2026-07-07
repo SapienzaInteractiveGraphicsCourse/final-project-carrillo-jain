@@ -1242,7 +1242,10 @@ scene.add(boatGroup);
 const BOAT_LENGTH  = 1.1;           
 const BOAT_HEADING = 0;              
 const BOAT_FLOAT   = 0.12;          
-const BOAT_HIDE_Y  = 9.5;   // rowed out past the mouth into the dark -> hide him until he returns
+const BOAT_HIDE_Y  = 15.5;  // rowed deep into the edge-of-map fog bank -> hide him there. The
+                            // bank is ~95% opaque past this line, so both the hide on the way
+                            // out and the reappear on the way back are swallowed by the fog
+                            // instead of popping in clear air (was 9.5, just past the mouth).
 const WORLD_UP   = new THREE.Vector3(0, 0, 1);  
 const OAR_L_SIGN = +1;
 const OAR_R_SIGN = -1;              
@@ -1555,8 +1558,123 @@ const fireflyMaterial = new THREE.ShaderMaterial({
 });
 
 const fireflies = new THREE.Points(fireflyGeometry, fireflyMaterial);
-fireflies.frustumCulled = false; 
+fireflies.frustumCulled = false;
 scene.add(fireflies);
+
+// ---------------- EDGE-OF-MAP FOG BANK ----------------
+// A stack of big vertical noise sheets across the open water past the cave
+// mouth (+Y): light wisps where it starts (~y 9), a near-solid wall by y ~16.
+// It exists so the captain (BOAT_HIDE_Y) and the bats (BAT_GONE_Y / the
+// return-flight spawn band) can despawn/respawn INSIDE the dense part instead
+// of popping in clear air -- and it closes off the map edge with a moody wall
+// instead of water that just ends.
+//
+// Perf: 6 flat quads sharing ONE compiled shader program (2x 3-octave value
+// noise, alpha only), depthWrite off, and skipped entirely in the water
+// depth pre-pass (same trick as batsGroup). Fill cost is confined to the
+// screen area the bank actually covers; per-frame JS is 2 uniform writes
+// per sheet. Flying through is smoothed by a camera-distance fade so a
+// sheet never clips as a hard card across the view.
+// Moonlit grey-blue, well above the 0x05060a background -- the bank must
+// READ as a dark cloud, not just occlude. Internal contrast comes from the
+// density term scaling the color in the shader.
+const EDGE_FOG_COLOR = new THREE.Color(0x323c52);
+// y = where the sheet stands; a = its base opacity. Ramped so the bank
+// thickens with depth. Cumulative transmittance past the last sheet is
+// under 0.1% -- anything despawning back there is already invisible.
+const EDGE_FOG_LAYERS = [
+    { y:  9.0, a: 0.30 },
+    { y: 10.8, a: 0.45 },
+    { y: 12.4, a: 0.60 },
+    { y: 13.8, a: 0.70 },
+    { y: 15.0, a: 0.85 },
+    { y: 16.2, a: 0.95 },
+];
+
+const edgeFogVert = `
+    varying vec3 vWorldPos;
+    void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+    }`;
+
+const edgeFogFrag = `
+    uniform float uTime;
+    uniform float uAlpha;
+    uniform float uMul;
+    uniform vec3  uColor;
+    varying vec3  vWorldPos;
+
+    float efHash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float efNoise(vec2 p){
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(efHash(i),                  efHash(i + vec2(1.0, 0.0)), u.x),
+                   mix(efHash(i + vec2(0.0, 1.0)), efHash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+    float efFbm(vec2 p){
+        float v = 0.0, a = 0.5;
+        for (int i = 0; i < 3; i++){ v += a * efNoise(p); p *= 2.13; a *= 0.5; }
+        return v;
+    }
+
+    void main(){
+        // World-space sample; each sheet's own Y offsets the noise slice so
+        // the stacked layers never show the same pattern.
+        vec2 p = vec2(vWorldPos.x * 0.28 + vWorldPos.y * 1.7, vWorldPos.z * 0.55);
+        float n1 = efFbm(p       + vec2( uTime * 0.045, uTime * 0.012));
+        float n2 = efFbm(p * 1.9 + vec2(-uTime * 0.030, uTime * 0.020) + 4.7);
+        float billow  = n1 * 0.65 + n2 * 0.45;
+        float density = smoothstep(0.22, 0.80, billow);
+        density = mix(0.45, 1.0, density);   // it's a bank, not puffs -- never open a full hole
+
+        // Soft edges: meets the water at the bottom, and instead of a flat
+        // top fade, the skyline is carved by the same noise so the bank
+        // reads as rolling cloud tops against the dark.
+        float top  = 3.2 + billow * 3.0;
+        float fade = smoothstep(-1.35, -0.45, vWorldPos.z)
+                   * (1.0 - smoothstep(top - 1.6, top, vWorldPos.z))
+                   * (1.0 - smoothstep(16.0, 21.5, abs(vWorldPos.x)));
+
+        // Fade out right at the camera so flying through the bank never
+        // clips a hard sheet across the screen.
+        float camFade = smoothstep(0.4, 2.6, distance(cameraPosition, vWorldPos));
+
+        float alpha = uAlpha * uMul * density * fade * camFade;
+        if (alpha < 0.004) discard;
+        // strong dense-vs-thin contrast so the churn is actually visible:
+        // thin wisps fall toward the background, thick billows catch "light"
+        gl_FragColor = vec4(uColor * (0.55 + density * 1.1), alpha);
+    }`;
+
+const edgeFogGeo = new THREE.PlaneGeometry(44, 10);
+edgeFogGeo.rotateX(Math.PI / 2);   // stand it up: quad in world XZ, facing along Y
+
+const edgeFogGroup = new THREE.Group();
+const edgeFogMats  = [];
+for (const { y, a } of EDGE_FOG_LAYERS) {
+    // One material per sheet (identical GLSL -> three.js compiles a single
+    // program) so each carries its own base opacity without per-draw juggling.
+    const mat = new THREE.ShaderMaterial({
+        uniforms: {
+            uTime:  { value: 0 },
+            uAlpha: { value: a },
+            uMul:   { value: 1 },
+            uColor: { value: EDGE_FOG_COLOR },
+        },
+        vertexShader:   edgeFogVert,
+        fragmentShader: edgeFogFrag,
+        transparent: true,
+        depthWrite:  false,
+        side:        THREE.DoubleSide,
+    });
+    const sheet = new THREE.Mesh(edgeFogGeo, mat);
+    sheet.position.set(0, y, 2.0);   // spans z -3..7: waterline up over the mouth arch
+    edgeFogGroup.add(sheet);
+    edgeFogMats.push(mat);
+}
+scene.add(edgeFogGroup);
 
 // ---------------- BAT SWARM ----------------
 // Every bat is its own skinned-mesh clone (one draw call + one skeleton
@@ -1576,9 +1694,9 @@ const ROOST_MIN = new THREE.Vector3(-2.5, -11.0, -0.85);
 const ROOST_MAX = new THREE.Vector3( 2.5,  -8.0,  0.35);
 const ROOST_CENTER = new THREE.Vector3().addVectors(ROOST_MIN, ROOST_MAX).multiplyScalar(0.5);
 const EXIT_Y       = 4.0;    // the entrance cut plane -- "past the mouth" threshold
-const BAT_GONE_Y   = 16.0;   // fully outside the scene -- despawn fleeing bats here,
-                             // NOT at the cut plane, so they visibly fly off instead
-                             // of popping out of existence right at the opening
+const BAT_GONE_Y   = 17.0;   // deep inside the edge-of-map fog bank -- despawn fleeing
+                             // bats here, NOT at the cut plane, so they visibly fly off
+                             // and melt into the fog instead of popping out of existence
 const FLEE_RADIUS  = 4.0;
 const FLEE_SPEED   = 7.0;
 const STEER_FORCE  = 3.0;
@@ -1661,9 +1779,10 @@ function startBatReturn(bat) {
     bat.root.position.set(
         // spawn band aligned with the cave opening (x ~ -0.6..1.8) so they
         // fly IN through the mouth instead of clipping the walls beside it,
-        // and fully outside the scene so they don't pop into view midair
+        // and BEYOND the dense part of the edge fog bank so they emerge out
+        // of the fog instead of popping into view midair
         0.3 + (Math.random() - 0.5) * 1.6,
-        BAT_GONE_Y - 2.0 + Math.random() * 3.0,
+        BAT_GONE_Y + 0.5 + Math.random() * 2.0,
         THREE.MathUtils.lerp(0.2, 1.3, Math.random())
     );
     bat.root.visible = true;
@@ -1945,7 +2064,9 @@ const params = {
     waterSparkle: 0.8,        // fine ripple normal strength (glitter)
     waterGlint: 1.0,          // specular highlight brightness
     waterFlowSpeed: 0.35,     // how fast the fine surface shimmer drifts
-    waterWakeStrength: 1.0    // size of the boat's wake / displacement
+    waterWakeStrength: 1.0,   // size of the boat's wake / displacement
+    edgeFogDensity: 1.0       // edge-of-map fog bank thickness (0 = off; also scales the
+                              // camera-inside-the-bank global fog boost)
 };
 
 const gui = new GUI();
@@ -1980,6 +2101,7 @@ gui.add(params, 'waterSparkle', 0, 3).name('Water Sparkle');
 gui.add(params, 'waterGlint', 0, 3).name('Water Glint');
 gui.add(params, 'waterFlowSpeed', 0, 1.5).name('Water Flow Speed');
 gui.add(params, 'waterWakeStrength', 0, 3).name('Boat Wake');
+gui.add(params, 'edgeFogDensity', 0, 2).name('Edge Fog');
 
 function animate() {
     requestAnimationFrame(animate);
@@ -2124,6 +2246,11 @@ function animate() {
     updateFlames(timeSec);   // torch fire flicker (brightness + flame size only)
     fireflyUniforms.uTime.value = timeSec;
 
+    for (const m of edgeFogMats) {
+        m.uniforms.uTime.value = timeSec;
+        m.uniforms.uMul.value  = params.edgeFogDensity;
+    }
+
    // --- REPLACE WITH THIS ---
     // --- UNDERWATER CAMERA SENSOR ---
     // Calculate the exact wave height at the camera's location
@@ -2135,8 +2262,19 @@ function animate() {
     // surface rather than popping the instant z dips below waterSurfaceZ.
     const submersion = THREE.MathUtils.clamp((waterSurfaceZ - camera.position.z) / 0.05, 0, 1);
     setUnderwaterFactor(submersion);
-    scene.fog.color.setHex(0x05060a).lerp(_underwaterFogColor, submersion);
-    scene.fog.density = THREE.MathUtils.lerp(0.022, 0.3, submersion);
+    // Edge-of-map fog: flying out INTO the bank also thickens the global
+    // scene fog, so from inside it the whole world fades away instead of the
+    // sheets alone carrying the effect. Ramps in past y 10 (the authored
+    // start view at y 11.5 only picks up a light haze) and is solid by ~16.
+    const edgeAmt = THREE.MathUtils.smoothstep(camera.position.y, 10.0, 16.0)
+                  * (1 - submersion) * Math.min(params.edgeFogDensity, 1);
+    scene.fog.color.setHex(0x05060a)
+        .lerp(_underwaterFogColor, submersion)
+        .lerp(EDGE_FOG_COLOR, edgeAmt);
+    scene.fog.density = Math.max(
+        THREE.MathUtils.lerp(0.022, 0.3, submersion),
+        THREE.MathUtils.lerp(0.022, 0.16, edgeAmt)
+    );
     // --------------------------------
 
     waterMaterial.uniforms.uTime.value         = timeSec;
@@ -2270,13 +2408,15 @@ function animate() {
     // point-light cubemap passes a second time.
     renderer.shadowMap.needsUpdate = true;
     water.visible = false;
-    batsGroup.visible = false;   // swarm skipped in the depth pre-pass (see batsGroup)
+    batsGroup.visible = false;    // swarm skipped in the depth pre-pass (see batsGroup)
+    edgeFogGroup.visible = false; // fog writes no depth -- pure wasted fill in this pass
     renderer.setRenderTarget(depthTarget);
     renderer.render(scene, camera);
 
     // --- 2. SHOW WATER & CAP, RENDER TO SCREEN ---
     water.visible = true;
     batsGroup.visible = true;
+    edgeFogGroup.visible = true;
     renderer.setRenderTarget(null);
     renderer.render(scene, camera);
     TWEEN.update();
