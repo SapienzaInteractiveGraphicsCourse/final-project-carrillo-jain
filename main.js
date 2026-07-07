@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
 import { MTLLoader } from 'three/addons/loaders/MTLLoader.js';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
@@ -42,7 +41,85 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.shadowMap.autoUpdate = false;
 document.body.appendChild(renderer.domElement);
 
-const controls = new PointerLockControls(camera, renderer.domElement);
+// Z-up pointer-lock fly controller. Stock PointerLockControls assumes Y-up,
+// which is why the camera couldn't pitch down in this Z-up scene. This tracks
+// yaw (about world +Z) and pitch (about the camera's local right axis) directly,
+// so you can look straight up or straight down, and it's smooth/consistent.
+class ZUpFlyControls extends THREE.EventDispatcher {
+    constructor(camera, domElement) {
+        super();
+        this.camera = camera;
+        this.domElement = domElement;
+        this.isLocked = false;
+        this.pointerSpeed = 1.0;                 // mouse sensitivity
+        this.minPitch = -Math.PI / 2 + 0.001;    // look straight down
+        this.maxPitch =  Math.PI / 2 - 0.001;    // look straight up
+
+        this._yaw = 0;
+        this._pitch = 0;
+        // base: reorient default cam (fwd -Z, up +Y) to fwd +Y, up +Z
+        this._qBase  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
+        this._qYaw   = new THREE.Quaternion();
+        this._qPitch = new THREE.Quaternion();
+        this._Z = new THREE.Vector3(0, 0, 1);
+        this._X = new THREE.Vector3(1, 0, 0);
+        this._vec = new THREE.Vector3();
+
+        this._syncFromCamera();   // no snap on first lock: adopt current look dir
+
+        this._onMove   = this._onMove.bind(this);
+        this._onChange = this._onChange.bind(this);
+        document.addEventListener('mousemove', this._onMove);
+        document.addEventListener('pointerlockchange', this._onChange);
+    }
+
+    _syncFromCamera() {
+        const d = new THREE.Vector3();
+        this.camera.getWorldDirection(d);
+        this._pitch = Math.asin(THREE.MathUtils.clamp(d.z, -1, 1));
+        this._yaw   = Math.atan2(-d.x, d.y);
+        this._apply();
+    }
+
+    _apply() {
+        this._pitch = THREE.MathUtils.clamp(this._pitch, this.minPitch, this.maxPitch);
+        this._qYaw.setFromAxisAngle(this._Z, this._yaw);
+        this._qPitch.setFromAxisAngle(this._X, this._pitch);
+        // world = yaw * base * pitch  ->  yaw about world Z, pitch about local right
+        this.camera.quaternion.copy(this._qYaw).multiply(this._qBase).multiply(this._qPitch);
+    }
+
+    _onMove(e) {
+        if (!this.isLocked) return;
+        this._yaw   -= e.movementX * 0.002 * this.pointerSpeed;
+        this._pitch -= e.movementY * 0.002 * this.pointerSpeed;  // mouse down = look down
+        this._apply();
+    }
+
+    _onChange() {
+        const locked = document.pointerLockElement === this.domElement;
+        if (locked === this.isLocked) return;
+        this.isLocked = locked;
+        this.dispatchEvent({ type: locked ? 'lock' : 'unlock' });
+    }
+
+    lock()   { this.domElement.requestPointerLock(); }
+    unlock() { document.exitPointerLock(); }
+
+    // Horizontal movement relative to look direction (unchanged behaviour;
+    // Space/Shift still handle vertical in your animate loop).
+    moveForward(distance) {
+        this._vec.setFromMatrixColumn(this.camera.matrix, 0); // camera right
+        this._vec.crossVectors(this.camera.up, this._vec);    // -> horizontal forward
+        this.camera.position.addScaledVector(this._vec, distance);
+    }
+    moveRight(distance) {
+        this._vec.setFromMatrixColumn(this.camera.matrix, 0);
+        this.camera.position.addScaledVector(this._vec, distance);
+    }
+}
+
+const controls = new ZUpFlyControls(camera, renderer.domElement);
 
 const style = document.createElement('style');
 style.textContent = `
