@@ -7,26 +7,18 @@ import * as TWEEN from 'three/addons/libs/tween.module.js';
 import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
 import { clone as cloneSkeleton } from 'three/addons/utils/SkeletonUtils.js';
 
+// ==================== SCENE, CAMERA & RENDERER ====================
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x05060a);
-scene.fog = new THREE.FogExp2(0x05060a, 0.022); // Add atmospheric depth to the cave
-const camera = new THREE.PerspectiveCamera(
-    60,
-    window.innerWidth / window.innerHeight,
-    0.05,
-    1000
-);
-// Start outside the cave, looking back at the entrance, so the whole
-// mouth (and the boat rowing in/out of it) is in view from the start.
-// This scene is Z-up (the water plane lies in world XY, so "up" is +Z).
-// Set that BEFORE lookAt — otherwise lookAt uses the default +Y up and rolls
-// the horizon on load (the tilt you saw). PointerLockControls re-levels it the
-// moment you click, which is why only the load view looked tilted.
+scene.fog = new THREE.FogExp2(0x05060a, 0.022);
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 1000);
 camera.up.set(0, 0, 1);
 camera.position.set(2.2, 11.5, 2.2);
 camera.lookAt(-0.2, 2.0, -0.6);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true, stencil: true });
+const renderer = new THREE.WebGLRenderer({
+    antialias: true,
+    stencil: true,
+});
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -35,82 +27,72 @@ renderer.toneMappingExposure = 1.15;
 renderer.localClippingEnabled = true;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-// The scene is rendered twice per frame (depth pre-pass + main pass for water
-// refraction). Shadow maps only need to be computed once; without this, all
-// 7 point-light shadow cubemaps re-render every shadow caster twice per frame.
 renderer.shadowMap.autoUpdate = false;
 document.body.appendChild(renderer.domElement);
 
-// Z-up pointer-lock fly controller. Stock PointerLockControls assumes Y-up,
-// which is why the camera couldn't pitch down in this Z-up scene. This tracks
-// yaw (about world +Z) and pitch (about the camera's local right axis) directly,
-// so you can look straight up or straight down, and it's smooth/consistent.
+// ==================== CAMERA CONTROLS (Z-UP FLY) ====================
 class ZUpFlyControls extends THREE.EventDispatcher {
     constructor(camera, domElement) {
         super();
         this.camera = camera;
         this.domElement = domElement;
         this.isLocked = false;
-        this.pointerSpeed = 1.0;                 // mouse sensitivity
-        this.minPitch = -Math.PI / 2 + 0.001;    // look straight down
-        this.maxPitch =  Math.PI / 2 - 0.001;    // look straight up
-
+        this.pointerSpeed = 1.0;
+        this.minPitch = -Math.PI / 2 + 0.001;
+        this.maxPitch = Math.PI / 2 - 0.001;
         this._yaw = 0;
         this._pitch = 0;
-        // base: reorient default cam (fwd -Z, up +Y) to fwd +Y, up +Z
-        this._qBase  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2);
-        this._qYaw   = new THREE.Quaternion();
+        this._qBase = new THREE.Quaternion().setFromAxisAngle(
+            new THREE.Vector3(1, 0, 0),
+            Math.PI / 2,
+        );
+        this._qYaw = new THREE.Quaternion();
         this._qPitch = new THREE.Quaternion();
         this._Z = new THREE.Vector3(0, 0, 1);
         this._X = new THREE.Vector3(1, 0, 0);
         this._vec = new THREE.Vector3();
-
-        this._syncFromCamera();   // no snap on first lock: adopt current look dir
-
-        this._onMove   = this._onMove.bind(this);
+        this._syncFromCamera();
+        this._onMove = this._onMove.bind(this);
         this._onChange = this._onChange.bind(this);
         document.addEventListener('mousemove', this._onMove);
         document.addEventListener('pointerlockchange', this._onChange);
     }
-
     _syncFromCamera() {
         const d = new THREE.Vector3();
         this.camera.getWorldDirection(d);
         this._pitch = Math.asin(THREE.MathUtils.clamp(d.z, -1, 1));
-        this._yaw   = Math.atan2(-d.x, d.y);
+        this._yaw = Math.atan2(-d.x, d.y);
         this._apply();
     }
-
     _apply() {
         this._pitch = THREE.MathUtils.clamp(this._pitch, this.minPitch, this.maxPitch);
         this._qYaw.setFromAxisAngle(this._Z, this._yaw);
         this._qPitch.setFromAxisAngle(this._X, this._pitch);
-        // world = yaw * base * pitch  ->  yaw about world Z, pitch about local right
         this.camera.quaternion.copy(this._qYaw).multiply(this._qBase).multiply(this._qPitch);
     }
-
     _onMove(e) {
         if (!this.isLocked) return;
-        this._yaw   -= e.movementX * 0.002 * this.pointerSpeed;
-        this._pitch -= e.movementY * 0.002 * this.pointerSpeed;  // mouse down = look down
+        this._yaw -= e.movementX * 0.002 * this.pointerSpeed;
+        this._pitch -= e.movementY * 0.002 * this.pointerSpeed;
         this._apply();
     }
-
     _onChange() {
         const locked = document.pointerLockElement === this.domElement;
         if (locked === this.isLocked) return;
         this.isLocked = locked;
-        this.dispatchEvent({ type: locked ? 'lock' : 'unlock' });
+        this.dispatchEvent({
+            type: locked ? 'lock' : 'unlock',
+        });
     }
-
-    lock()   { this.domElement.requestPointerLock(); }
-    unlock() { document.exitPointerLock(); }
-
-    // Horizontal movement relative to look direction (unchanged behaviour;
-    // Space/Shift still handle vertical in your animate loop).
+    lock() {
+        this.domElement.requestPointerLock();
+    }
+    unlock() {
+        document.exitPointerLock();
+    }
     moveForward(distance) {
-        this._vec.setFromMatrixColumn(this.camera.matrix, 0); // camera right
-        this._vec.crossVectors(this.camera.up, this._vec);    // -> horizontal forward
+        this._vec.setFromMatrixColumn(this.camera.matrix, 0);
+        this._vec.crossVectors(this.camera.up, this._vec);
         this.camera.position.addScaledVector(this._vec, distance);
     }
     moveRight(distance) {
@@ -119,8 +101,8 @@ class ZUpFlyControls extends THREE.EventDispatcher {
     }
 }
 
+// ==================== POINTER-LOCK CONTROLS & START OVERLAY ====================
 const controls = new ZUpFlyControls(camera, renderer.domElement);
-
 const style = document.createElement('style');
 style.textContent = `
     #flight-overlay {
@@ -153,7 +135,6 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
-
 const overlay = document.createElement('div');
 overlay.id = 'flight-overlay';
 overlay.innerHTML = `
@@ -163,47 +144,46 @@ overlay.innerHTML = `
             <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> &nbsp; move</div>
             <div><kbd>Space</kbd> up &nbsp;·&nbsp; <kbd>Shift</kbd> down</div>
             <div><kbd>Ctrl</kbd> boost &nbsp;·&nbsp; <kbd>Mouse</kbd> look</div>
-            <div><kbd>P</kbd> log position as a torch line</div>
             <div><kbd>Esc</kbd> release pointer</div>
         </div>
     </div>
 `;
 document.body.appendChild(overlay);
-
 overlay.addEventListener('click', () => controls.lock());
-controls.addEventListener('lock',   () => overlay.classList.add('hidden'));
+controls.addEventListener('lock', () => overlay.classList.add('hidden'));
 controls.addEventListener('unlock', () => overlay.classList.remove('hidden'));
 
+// ==================== KEYBOARD INPUT & MOVEMENT ====================
 const keys = Object.create(null);
-addEventListener('keydown', (e) => { keys[e.code] = true; });
-addEventListener('keyup',   (e) => { keys[e.code] = false; });
-
-addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
-
 addEventListener('keydown', (e) => {
-    if (e.code !== 'KeyP' || !controls.isLocked) return;
-    const p = camera.position;
-    const line = `createTorch(new THREE.Vector3(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)})),`;
-    console.log(line);
-    if (navigator.clipboard) navigator.clipboard.writeText(line).catch(() => {});
-    flashHud();
+    keys[e.code] = true;
 });
-
+addEventListener('keyup', (e) => {
+    keys[e.code] = false;
+});
+addEventListener('blur', () => {
+    for (const k in keys) keys[k] = false;
+});
 const BASE_SPEED = 2.5;
 const BOOST_MULT = 4.0;
-const SMOOTHING  = 12.0;
-
-const velocity  = new THREE.Vector3();
-const inputDir  = new THREE.Vector3();
+const SMOOTHING = 12.0;
+const velocity = new THREE.Vector3();
+const inputDir = new THREE.Vector3();
 const targetVel = new THREE.Vector3();
-
-addEventListener('wheel', (e) => {
-    if (!controls.isLocked) return;
-    const factor = Math.exp(-e.deltaY * 0.001);
-    speedScale = THREE.MathUtils.clamp(speedScale * factor, 0.2, 8.0);
-}, { passive: true });
+addEventListener(
+    'wheel',
+    (e) => {
+        if (!controls.isLocked) return;
+        const factor = Math.exp(-e.deltaY * 0.001);
+        speedScale = THREE.MathUtils.clamp(speedScale * factor, 0.2, 8.0);
+    },
+    {
+        passive: true,
+    },
+);
 let speedScale = 1.0;
 
+// ==================== HUD (FPS / POSITION READOUT) ====================
 const hudStyle = document.createElement('style');
 hudStyle.textContent = `
     #flight-hud {
@@ -221,18 +201,13 @@ hudStyle.textContent = `
     }
     #flight-hud .lbl  { color: #888; }
     #flight-hud .hint { color: #777; font-size: 11px; }
-    #flight-hud.flash { background: rgba(255, 170, 68, 0.35); }
 `;
 document.head.appendChild(hudStyle);
-
 const hud = document.createElement('div');
 hud.id = 'flight-hud';
 document.body.appendChild(hud);
 
-// --- PASTE THIS RIGHT AFTER THE HUD IS APPENDED ---
-
-// Underwater filter: a blurred blue-tinted glass pane over the canvas that fades
-// in continuously with submersion depth.
+// ==================== UNDERWATER SCREEN OVERLAY ====================
 const underwaterStyle = document.createElement('style');
 underwaterStyle.textContent = `
     #underwater-overlay {
@@ -247,28 +222,21 @@ underwaterStyle.textContent = `
     }
 `;
 document.head.appendChild(underwaterStyle);
-
 const underwaterOverlay = document.createElement('div');
 underwaterOverlay.id = 'underwater-overlay';
 document.body.appendChild(underwaterOverlay);
-
-// 0 (dry) -> 1 (fully submerged); ramps the CSS blur/tint and the fog together.
 function setUnderwaterFactor(t) {
     const blurPx = t * 6;
     underwaterOverlay.style.backdropFilter = `blur(${blurPx.toFixed(2)}px) saturate(${(1 - 0.3 * t).toFixed(2)})`;
     underwaterOverlay.style.webkitBackdropFilter = underwaterOverlay.style.backdropFilter;
     underwaterOverlay.style.backgroundColor = `rgba(15, 70, 90, ${(t * 0.38).toFixed(3)})`;
 }
-
-// Target color for the underwater fog
 const _underwaterFogColor = new THREE.Color(0x1f6f7a);
-
 const _fwd = new THREE.Vector3();
 const fmt = (n) => (n >= 0 ? ' ' : '') + n.toFixed(2);
-
 let _frames = 0;
-let _fpsT   = performance.now();
-let _fps    = 0;
+let _fpsT = performance.now();
+let _fps = 0;
 function tickFps(now) {
     _frames++;
     if (now - _fpsT >= 500) {
@@ -277,12 +245,10 @@ function tickFps(now) {
         _fpsT = now;
     }
 }
-
 let _hudT = 0;
 function updateHud(now) {
     if (now - _hudT < 100) return;
     _hudT = now;
-
     camera.getWorldDirection(_fwd);
     const p = camera.position;
     const r = renderer.info.render;
@@ -296,90 +262,133 @@ function updateHud(now) {
         `<span class="hint">P — log torch at this spot</span>`;
 }
 
-function flashHud() {
-    hud.classList.add('flash');
-    setTimeout(() => hud.classList.remove('flash'), 180);
-}
-
-let _lastLogT = 0;
-const _lastLogPos = new THREE.Vector3(Infinity, Infinity, Infinity);
-function maybeLogPosition() {
-    if (!controls.isLocked) return;
-    const now = performance.now();
-    if (now - _lastLogT < 1000) return;
-    if (camera.position.distanceTo(_lastLogPos) < 0.05) return;
-    _lastLogT = now;
-    _lastLogPos.copy(camera.position);
-    const p = camera.position;
-    console.log(`camera.position.set(${p.x.toFixed(2)}, ${p.y.toFixed(2)}, ${p.z.toFixed(2)});`);
-}
-
-
-// --- REPLACE YOUR EXISTING AMBIENT/HEMI/DIRECTIONAL LIGHTS WITH THIS ---
-// These are non-positional fills -- they light the WHOLE cave evenly,
-// including the unlit back where the bats roost. Kept low on purpose (and
-// lower than before) so the brighter torches dominate near the entrance
-// while the torch-less back stays genuinely dark instead of ambient-lit.
+// ==================== LIGHTS ====================
 const ambientLight = new THREE.AmbientLight(0x3a4658, 0.16);
 scene.add(ambientLight);
-
 const hemiLight = new THREE.HemisphereLight(0x55677f, 0x2a2018, 0.22);
 hemiLight.position.set(0, 0, 5);
 scene.add(hemiLight);
-
 const skyShaft = new THREE.DirectionalLight(0x9fb6cc, 0.16);
 skyShaft.position.set(2.5, 4.0, 3.0);
 skyShaft.target.position.set(-0.5, -4.0, -0.5);
 scene.add(skyShaft, skyShaft.target);
 
+// ==================== MOON & MOONLIGHT ====================
+const MOON_RADIUS = 11;
+const MOON_TARGET = new THREE.Vector3(0, -1.0, -0.5);
+// Shared with the water shader (same Vector3 instance backs uMoonPos),
+// so moving the moon in the GUI moves the reflection automatically.
+const MOON_WORLD = new THREE.Vector3();
+const moonParams = {
+    azimuth: 0,
+    elevation: 20,
+    distance: 115,
+    glow: 1.0,
+    light: 0.55,
+    halo: 0.7,
+    reflection: 0.6,
+};
+const moonMat = new THREE.MeshStandardMaterial({
+    color: 0xbfc6d2,
+    emissive: 0xaebed6,
+    emissiveIntensity: moonParams.glow,
+    roughness: 1.0,
+    metalness: 0.0,
+    fog: false,
+});
+new THREE.TextureLoader().load(
+    './models/moon.png',
+    (t) => {
+        t.colorSpace = THREE.SRGBColorSpace;
+        t.anisotropy = 4;
+        moonMat.map = t;
+        moonMat.emissiveMap = t;
+        moonMat.color.set(0xffffff);
+        moonMat.needsUpdate = true;
+    },
+    undefined,
+    () => {
+        moonMat.color.set(0xbfc6d2);
+    },
+);
+const moonMesh = new THREE.Mesh(new THREE.SphereGeometry(MOON_RADIUS, 64, 48), moonMat);
+moonMesh.rotation.set(Math.PI / 2, 0, 0.35);
+function makeMoonHalo() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 256;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(128, 128, 8, 128, 128, 128);
+    grad.addColorStop(0.0, 'rgba(206, 218, 240, 0.85)');
+    grad.addColorStop(0.25, 'rgba(160, 182, 216, 0.32)');
+    grad.addColorStop(1.0, 'rgba(120, 142, 182, 0.0)');
+    g.fillStyle = grad;
+    g.fillRect(0, 0, 256, 256);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+}
+const moonHaloMat = new THREE.SpriteMaterial({
+    map: makeMoonHalo(),
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    fog: false,
+    opacity: moonParams.halo,
+});
+const moonHalo = new THREE.Sprite(moonHaloMat);
+moonHalo.scale.setScalar(MOON_RADIUS * 6);
+const moonGroup = new THREE.Group();
+moonGroup.add(moonHalo);
+moonGroup.add(moonMesh);
+moonGroup.renderOrder = -1;
+scene.add(moonGroup);
+const moonLight = new THREE.DirectionalLight(0x9fb4d6, moonParams.light);
+moonLight.target.position.copy(MOON_TARGET);
+scene.add(moonLight, moonLight.target);
+function placeMoon() {
+    const az = THREE.MathUtils.degToRad(moonParams.azimuth);
+    const el = THREE.MathUtils.degToRad(moonParams.elevation);
+    const d = moonParams.distance;
+    const ce = Math.cos(el);
+    const x = MOON_TARGET.x + d * ce * Math.sin(az);
+    const y = MOON_TARGET.y + d * ce * Math.cos(az);
+    const z = MOON_TARGET.z + d * Math.sin(el);
+    MOON_WORLD.set(x, y, z);
+    moonGroup.position.copy(MOON_WORLD);
+    moonLight.position.copy(MOON_WORLD);
+}
+placeMoon();
+
+// The moon's reflection is rendered inside the water shader itself (see
+// "Moon glade" in waterFragment): a real specular glade that converges on
+// the point beneath the moon and shatters into animated glints on the waves.
+
+// ==================== RIVER & BOAT PATHS ====================
 const riverPoints = [
-
-    new THREE.Vector3( -1.2,   3.0, -1.0),
-    new THREE.Vector3( -0.6,   0.0, -1.0),
-    new THREE.Vector3( -1.9,  -3.5, -1.0),
-    new THREE.Vector3( -0.6,  -7.0, -1.0),
-    new THREE.Vector3( -0.9, -10.0, -1.0),
-
-    new THREE.Vector3( -0.7, -11.0, -1.0),
-
-    new THREE.Vector3( -0.5, -10.0, -1.0),
-    new THREE.Vector3( -0.5,  -3.5, -1.0),
-    new THREE.Vector3( -0.5,   3.0, -1.0)
+    new THREE.Vector3(-1.2, 3.0, -1.0),
+    new THREE.Vector3(-0.6, 0.0, -1.0),
+    new THREE.Vector3(-1.9, -3.5, -1.0),
+    new THREE.Vector3(-0.6, -7.0, -1.0),
+    new THREE.Vector3(-0.9, -10.0, -1.0),
+    new THREE.Vector3(-0.7, -11.0, -1.0),
+    new THREE.Vector3(-0.5, -10.0, -1.0),
+    new THREE.Vector3(-0.5, -3.5, -1.0),
+    new THREE.Vector3(-0.5, 3.0, -1.0),
 ];
-
 const riverCurve = new THREE.CatmullRomCurve3(riverPoints, false);
-
-// The boat follows an EXTENDED version of the river path that reaches out
-// past the cave mouth (+Y) at both ends, so every loop it rows out of the
-// cave and back in. riverCurve itself is left unchanged, so the wall torches
-// placed along it stay exactly where they are.
-// The open water gap at the entrance cut plane (y=4) spans roughly
-// x -0.6..1.8 at boat height, so the transit through the mouth is routed
-// near the middle of that gap instead of hugging the left rock wall.
 const boatPoints = [
-    new THREE.Vector3( 0.4, 20.0, -1.0),   // edge of the map (water ends at y=20) — boat enters from here
-    new THREE.Vector3( 0.4,  7.5, -1.0),   // straight run-up toward the opening
-    new THREE.Vector3(-0.1,  3.9, -1.0),   // centered in the mouth as he crosses the entrance
+    new THREE.Vector3(0.4, 20.0, -1.0),
+    new THREE.Vector3(0.4, 7.5, -1.0),
+    new THREE.Vector3(-0.1, 3.9, -1.0),
     ...riverPoints,
-    new THREE.Vector3( 0.1,  4.0, -1.0),   // back out through the middle of the opening
-    new THREE.Vector3( 0.5,  7.5, -1.0),
-    new THREE.Vector3( 0.5, 20.0, -1.0),   // edge of the map — boat exits to here
+    new THREE.Vector3(0.1, 4.0, -1.0),
+    new THREE.Vector3(0.5, 7.5, -1.0),
+    new THREE.Vector3(0.5, 20.0, -1.0),
 ];
 const boatCurve = new THREE.CatmullRomCurve3(boatPoints, false);
-
-// The boat path is much longer than the river path (it reaches way outside
-// the scene at both ends). Scale progress speed so his rowing pace in world
-// units stays the same as before.
 const BOAT_SPEED_SCALE = riverCurve.getLength() / boatCurve.getLength();
 
-const pathGeometry = new THREE.TubeGeometry(riverCurve, 64, 0.05, 8, false);
-const pathMaterial = new THREE.MeshBasicMaterial({ color: 0x00ffff, wireframe: false });
-const visiblePath = new THREE.Mesh(pathGeometry, pathMaterial);
-scene.add(visiblePath);
-
-// Hide the cyan debug tube that marks the river path (set true to show it again).
-visiblePath.visible = false;
-
+// ==================== WALL TORCHES ====================
 function wallTorchPlacement(progress, side, wallDist, z) {
     const p = riverCurve.getPointAt(progress);
     const tangent = riverCurve.getTangentAt(progress).normalize();
@@ -387,196 +396,155 @@ function wallTorchPlacement(progress, side, wallDist, z) {
     const outward = perp.multiplyScalar(side);
     const pos = new THREE.Vector3(p.x + outward.x * wallDist, p.y + outward.y * wallDist, z);
     const facing = outward.clone().multiplyScalar(-1);
-    return { pos, facing };
+    return {
+        pos,
+        facing,
+    };
 }
-
 function createTorch(position, { intensity = 12, color = 0xe6a874, castShadow = false } = {}) {
     const light = new THREE.PointLight(color, intensity, 25, 2);
     light.position.copy(position);
     light.castShadow = castShadow;
-    // Remember which torches were authored as shadow casters. We only ever
-    // let a handful of these be castShadow=true at once (see
-    // updateActiveShadowTorches), toggled by distance to the camera, so mark
-    // eligibility here separately from the live castShadow flag.
     light.userData.shadowEligible = castShadow;
     if (castShadow) {
-        light.shadow.bias           = -0.0015;
-        light.shadow.normalBias     =  0.03;
-        light.shadow.radius         =  3;
-        // Point-light shadows render 6 cube faces each; with several of
-        // these active at once this resolution matters a lot more than a
-        // single directional shadow map would. 512 is plenty for a torch.
-        light.shadow.mapSize.width  =  512;
-        light.shadow.mapSize.height =  512;
-        light.shadow.camera.near    =  0.5;
-        light.shadow.camera.far     =  25;
+        light.shadow.bias = -0.0015;
+        light.shadow.normalBias = 0.03;
+        light.shadow.radius = 3;
+        light.shadow.mapSize.width = 512;
+        light.shadow.mapSize.height = 512;
+        light.shadow.camera.near = 0.5;
+        light.shadow.camera.far = 25;
     }
     const marker = new THREE.Mesh(
         new THREE.SphereGeometry(0.04, 8, 8),
-        new THREE.MeshBasicMaterial({ color })
+        new THREE.MeshBasicMaterial({
+            color,
+        }),
     );
     marker.castShadow = false;
     marker.receiveShadow = false;
     light.add(marker);
-    light.userData.marker = marker;   // hidden once the real wall-torch model attaches
+    light.userData.marker = marker;
     scene.add(light);
     return light;
 }
-
-// NEW TORCH LAYOUT (Replace the deleted lines with these)
 const TORCH_LAYOUT = [
-    { progress: 0.04, side: -1 },
-    { progress: 0.13, side:  1 },
-    { progress: 0.24, side: -1 },
+    {
+        progress: 0.04,
+        side: -1,
+    },
+    {
+        progress: 0.13,
+        side: 1,
+    },
+    {
+        progress: 0.24,
+        side: -1,
+    },
 ];
 const TORCH_WALL_DIST_DEFAULT = 2.2;
 const TORCH_HEIGHT_DEFAULT = 1.1;
-
 const torches = TORCH_LAYOUT.map(({ progress, side }) => {
-    const { pos, facing } = wallTorchPlacement(progress, side, TORCH_WALL_DIST_DEFAULT, TORCH_HEIGHT_DEFAULT);
-    return createTorch(pos, { castShadow: false, facing });
+    const { pos, facing } = wallTorchPlacement(
+        progress,
+        side,
+        TORCH_WALL_DIST_DEFAULT,
+        TORCH_HEIGHT_DEFAULT,
+    );
+    return createTorch(pos, {
+        castShadow: false,
+        facing,
+    });
 });
-
-// Every point-light shadow (cube map) costs 6 full scene renders, so this
-// stays in place as a safety net even though neither remaining torch is a
-// shadow caster right now -- if a shadow-casting torch is ever added back,
-// only the ones nearest the camera will actually cast at once instead of
-// paying for all of them every frame.
 const MAX_ACTIVE_SHADOW_TORCHES = 2;
-const shadowEligibleTorches = torches.filter(t => t.userData.shadowEligible);
-
+const shadowEligibleTorches = torches.filter((t) => t.userData.shadowEligible);
 function updateActiveShadowTorches(camPos) {
     shadowEligibleTorches
-        .map(t => ({ t, d: t.position.distanceToSquared(camPos) }))
+        .map((t) => ({
+            t,
+            d: t.position.distanceToSquared(camPos),
+        }))
         .sort((a, b) => a.d - b.d)
-        .forEach(({ t }, i) => { t.castShadow = i < MAX_ACTIVE_SHADOW_TORCHES; });
+        .forEach(({ t }, i) => {
+            t.castShadow = i < MAX_ACTIVE_SHADOW_TORCHES;
+        });
 }
-
-// ---- Mount the torches on the actual cave wall (via raycast) ----
 const _torchRay = new THREE.Raycaster();
 _torchRay.far = 20;
-let caveRoot = null;   // set once the cave OBJ has loaded
-
+let caveRoot = null;
 function mountTorchesOnWall() {
     if (!caveRoot) return;
-
     TORCH_LAYOUT.forEach(({ progress, side }, i) => {
         const torch = torches[i];
         const p = riverCurve.getPointAt(progress);
         const tangent = riverCurve.getTangentAt(progress).normalize();
-
-        // direction from the river path outward toward the wall (XY plane)
         const outward = new THREE.Vector3(-tangent.y, tangent.x, 0)
-            .multiplyScalar(side).normalize();
-
-        // shoot a ray from the path, at torch height, straight at the wall
+            .multiplyScalar(side)
+            .normalize();
         const origin = new THREE.Vector3(p.x, p.y, TORCH_HEIGHT_DEFAULT);
         _torchRay.set(origin, outward);
-
         const hits = _torchRay.intersectObject(caveRoot, true);
         if (!hits.length) {
             console.warn(`Torch ${i}: no wall hit — left at default spot`);
             return;
         }
-
-        // pull the torch slightly off the rock so the model doesn't sink in
         torch.position.copy(hits[0].point).addScaledVector(outward, -0.12);
-
-        // rotate it so the mounting plate lies flat against the wall
         torch.rotation.set(0, 0, Math.atan2(-outward.x, outward.y));
     });
-
-    updateFlameAnchors();   // re-pin the flames to the moved torches
+    updateFlameAnchors();
 }
-
-// ---------------- WALL TORCH MODEL ----------------
-// Replaces the plain glow-sphere marker with an actual wall-mounted torch
-// (firewood + metal cage + mounting plate), decimated/retextured down from
-// the original 4K/70MB source asset (see models/torch/wall_torch.glb).
-const torchMounts = [];   // one Group per torch, so we can live-tune orientation from the GUI
-
-// Applies the live GUI-tunable orientation/scale to every mounted torch
-// model. Called once after load and again from the GUI's onChange so the
-// up-axis correction can be dialed in interactively instead of guessed
-// blind -- I can't render WebGL myself to verify it looks right.
+const torchMounts = [];
 function updateTorchModelTransform() {
     for (const mount of torchMounts) {
         mount.rotation.x = THREE.MathUtils.degToRad(params.torchModelRotX);
         mount.rotation.z = THREE.MathUtils.degToRad(params.torchModelRotZ);
         mount.scale.setScalar(params.torchModelScale);
     }
-    updateFlameAnchors();   // firewood moved -> re-pin the flame to it
+    updateFlameAnchors();
 }
-
 const torchGltfLoader = new GLTFLoader();
 torchGltfLoader.load(
     './models/torch/wall_torch.glb',
     (gltf) => {
         const source = gltf.scene;
         source.updateMatrixWorld(true);
-
-        // Find the firewood mesh (in the model's own untouched space) so
-        // each clone can be re-centered on the torch's actual light
-        // position instead of its wall-mount pivot -- the light was
-        // authored assuming it sits where the flame is.
         const flameWorldPos = new THREE.Vector3();
         source.traverse((child) => {
             if (child.name === 'Fire Wood') child.getWorldPosition(flameWorldPos);
         });
-
         source.traverse((child) => {
             if (!child.isMesh) return;
-            child.castShadow = false;     // small prop -- not worth another shadow caster
+            child.castShadow = false;
             child.receiveShadow = true;
         });
-
         for (const torch of torches) {
-            const mount = new THREE.Group();   // pivot = the torch's light position
-
+            const mount = new THREE.Group();
             const clone = source.clone(true);
             clone.position.copy(flameWorldPos).multiplyScalar(-1);
             mount.add(clone);
-
             torch.add(mount);
             torchMounts.push(mount);
-
-            // Remember the mesh the flame should sit on, so it stays pinned
-            // no matter how the model is tilted/scaled live. The fire belongs
-            // in the Metal Cage basket at the free end of the torch -- NOT the
-            // Fire Wood mesh, which on this model sits back near the wall
-            // mount. Fall back to Fire Wood only if the cage isn't found.
             let anchorMesh = null;
-            clone.traverse((c) => { if (c.name === 'Metal Cage') anchorMesh = c; });
-            if (!anchorMesh) clone.traverse((c) => { if (c.name === 'Fire Wood') anchorMesh = c; });
+            clone.traverse((c) => {
+                if (c.name === 'Metal Cage') anchorMesh = c;
+            });
+            if (!anchorMesh)
+                clone.traverse((c) => {
+                    if (c.name === 'Fire Wood') anchorMesh = c;
+                });
             torch.userData.woodMesh = anchorMesh;
-
             if (torch.userData.marker) torch.userData.marker.visible = false;
         }
-        updateTorchModelTransform();   // also runs updateFlameAnchors()
-        console.log(`Wall torch model attached to ${torchMounts.length} torches.`);
+        updateTorchModelTransform();
     },
     undefined,
-    (err) => console.error('Error loading wall torch model:', err)
+    (err) => console.error('Error loading wall torch model:', err),
 );
 
-// ---------------- TORCH FLAME + FLICKER ----------------
-// wall_torch.glb is an unlit prop -- it ships with only Fire Wood / Metal
-// Cage / Metal Plate / Torch meshes and NO flame and NO animation. Rather
-// than source a separate flame model (a static mesh flame reads as dead),
-// the flame is a single vertical quad driven by a noise-based fire shader.
-// Two deliberate choices keep it looking real:
-//   * it billboards around the world Z axis ONLY (this scene is Z-up: the
-//     water plane lies in world XY), yawing to face the camera but never
-//     rolling/pitching, so it always stands straight up instead of spinning
-//     with the camera the way a full sprite billboard does;
-//   * its pivot is at the BOTTOM of the quad, so it grows up out of the
-//     firewood instead of floating centred in front of it.
-// The flicker modulates the light's brightness + the flame's height only --
-// never the torch's position, so the physical prop never wobbles.
+// ==================== TORCH FLAMES (SHADER) ====================
 const _flameGeo = new THREE.PlaneGeometry(1, 1.1, 1, 1);
-_flameGeo.translate(0, 0.55, 0);   // move pivot to the base -> flame rises upward
-_flameGeo.rotateX(Math.PI / 2);    // stand the quad up along +Z -- world up in this Z-up scene
-
+_flameGeo.translate(0, 0.55, 0);
+_flameGeo.rotateX(Math.PI / 2);
 const _flameVert = `
     varying vec2 vUv;
     void main() {
@@ -641,44 +609,49 @@ const _flameFrag = `
         // brightness breathes with the same flicker driving the point light
         gl_FragColor = vec4(col * flame * (0.72 + 0.28 * uFlick), 1.0);   // additive: brightness = shape
     }`;
-
-const _flameWorld = new THREE.Vector3();   // scratch for the yaw billboard math
-
+const _flameWorld = new THREE.Vector3();
 function attachFlame(torch) {
     const mat = new THREE.ShaderMaterial({
         uniforms: {
-            uTime: { value: 0 },
-            uSeed: { value: Math.random() * 10.0 },
-            uFlick: { value: 1.0 },
-            uCore: { value: new THREE.Color(0xffe6a0) },
-            uMid:  { value: new THREE.Color(0xff8324) },
-            uEdge: { value: new THREE.Color(0xcf300a) },
+            uTime: {
+                value: 0,
+            },
+            uSeed: {
+                value: Math.random() * 10.0,
+            },
+            uFlick: {
+                value: 1.0,
+            },
+            uCore: {
+                value: new THREE.Color(0xffe6a0),
+            },
+            uMid: {
+                value: new THREE.Color(0xff8324),
+            },
+            uEdge: {
+                value: new THREE.Color(0xcf300a),
+            },
         },
-        vertexShader:   _flameVert,
+        vertexShader: _flameVert,
         fragmentShader: _flameFrag,
         transparent: true,
-        depthWrite:  false,
-        blending:    THREE.AdditiveBlending,
-        side:        THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        side: THREE.DoubleSide,
     });
-    const mesh  = new THREE.Mesh(_flameGeo, mat);
-    const group = new THREE.Group();   // holds offset/scale/yaw; parented to the light
+    const mesh = new THREE.Mesh(_flameGeo, mat);
+    const group = new THREE.Group();
     group.add(mesh);
     torch.add(group);
     torch.userData.flame = {
-        group, mat,
-        anchor: new THREE.Vector3(),   // firewood position in the torch's local space
-        phase:  Math.random() * Math.PI * 2,
-        crackle: 0,                    // low-passed random -> no frame-rate strobe
+        group,
+        mat,
+        anchor: new THREE.Vector3(),
+        phase: Math.random() * Math.PI * 2,
+        crackle: 0,
     };
 }
 for (const torch of torches) attachFlame(torch);
-
-// Pin each flame to its torch's firewood mesh. The light itself has no
-// rotation, so worldToLocal keeps the flame world-axis-aligned (upright)
-// while still landing exactly on the wood regardless of model tilt/scale.
-// Safe to call before the model loads -- torches without a woodMesh keep a
-// zero anchor and fall back to the origin + GUI offsets.
 const _flameBox = new THREE.Box3();
 function updateFlameAnchors() {
     scene.updateMatrixWorld(true);
@@ -687,94 +660,75 @@ function updateFlameAnchors() {
         const wm = torch.userData.woodMesh;
         const fl = torch.userData.flame;
         if (!wm || !fl) continue;
-        // Use the GEOMETRY's world centre, not the node origin: on this model
-        // the cage/firewood pivots sit back by the plate while the actual
-        // basket geometry extends out to the free end, so the node origin
-        // lands the flame over the mount instead of in the basket.
         _flameBox.setFromObject(wm);
         _flameBox.getCenter(w);
         torch.worldToLocal(w);
         fl.anchor.copy(w);
     }
 }
-
-// Per-frame update: advance the fire shader, yaw the quad to face the camera
-// (upright), and flicker brightness + height. No position is ever touched.
 function updateFlames(t) {
     for (const torch of torches) {
         const fl = torch.userData.flame;
         if (!fl) continue;
         fl.group.visible = params.flameEnabled;
-        if (!params.flameEnabled) { torch.intensity = params.torchIntensity; continue; }
-
+        if (!params.flameEnabled) {
+            torch.intensity = params.torchIntensity;
+            continue;
+        }
         fl.mat.uniforms.uTime.value = t;
-
-        // Yaw-only billboard: turn to face the camera around the world Z
-        // (vertical) axis, but never tilt -- this is what stops the flame
-        // "rotating with the camera".
         torch.getWorldPosition(_flameWorld);
         fl.group.rotation.set(
             0,
             0,
             Math.atan2(camera.position.x - _flameWorld.x, -(camera.position.y - _flameWorld.y)),
         );
-
-        const ph      = fl.phase;
-        const wobble  = 0.6 * Math.sin(t * 11.0 + ph) + 0.4 * Math.sin(t * 18.5 + ph * 1.7);
-        // low-pass the random crackle: a fresh Math.random() every frame
-        // strobes at frame rate; chasing a random target instead gives the
-        // slower gutter-and-recover rhythm of a real flame
-        fl.crackle += ((Math.random() - 0.5) - fl.crackle) * 0.12;
-        const flick   = 1 + params.flameFlicker * (wobble * 0.5 + fl.crackle * 1.5);
-
-        torch.intensity = params.torchIntensity * Math.max(0.25, flick);   // brightness only
+        const ph = fl.phase;
+        const wobble = 0.6 * Math.sin(t * 11.0 + ph) + 0.4 * Math.sin(t * 18.5 + ph * 1.7);
+        fl.crackle += (Math.random() - 0.5 - fl.crackle) * 0.12;
+        const flick = 1 + params.flameFlicker * (wobble * 0.5 + fl.crackle * 1.5);
+        torch.intensity = params.torchIntensity * Math.max(0.25, flick);
         fl.mat.uniforms.uFlick.value = THREE.MathUtils.clamp(flick, 0.4, 1.6);
-
         fl.group.position.set(
             fl.anchor.x + params.flameOffX,
             fl.anchor.y + params.flameOffY,
             fl.anchor.z + params.flameOffZ,
         );
         const s = params.flameScale;
-        fl.group.scale.set(s, s, s * (1.0 + 0.14 * (flick - 1)));   // height breathes
+        fl.group.scale.set(s, s, s * (1.0 + 0.14 * (flick - 1)));
     }
 }
 
-// --- REPLACE YOUR EXISTING CLIPPING PLANE LOGIC ---
+// ==================== CAVE CLIPPING & STENCIL CAPS ====================
 const ENTRANCE_CUT_Y_DEFAULT = 4.0;
 const entranceCut = new THREE.Plane(new THREE.Vector3(0, -1, 0), ENTRANCE_CUT_Y_DEFAULT);
 const roofCutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), -1.5);
-
 function upgradeToStandard(oldMat) {
     const newMat = new THREE.MeshStandardMaterial({
         color: oldMat.color ? oldMat.color.clone() : new THREE.Color(0x888888),
-        map:          oldMat.map        || null,
-        normalMap:    oldMat.normalMap  || oldMat.bumpMap || null,
+        map: oldMat.map || null,
+        normalMap: oldMat.normalMap || oldMat.bumpMap || null,
         roughnessMap: oldMat.roughnessMap || null,
-        roughness: 0.9, metalness: 0.05,
+        roughness: 0.9,
+        metalness: 0.05,
     });
-    
-    if (newMat.map)          newMat.map.colorSpace          = THREE.SRGBColorSpace;
-    if (newMat.normalMap)    newMat.normalMap.colorSpace    = THREE.NoColorSpace;
+    if (newMat.map) newMat.map.colorSpace = THREE.SRGBColorSpace;
+    if (newMat.normalMap) newMat.normalMap.colorSpace = THREE.NoColorSpace;
     if (newMat.roughnessMap) newMat.roughnessMap.colorSpace = THREE.NoColorSpace;
-    
     newMat.side = THREE.DoubleSide;
     newMat.shadowSide = THREE.FrontSide;
-    
-    // This is the new logic that slices the cave entrance
-    newMat.clippingPlanes = [entranceCut]; 
+    newMat.clippingPlanes = [entranceCut];
     newMat.clipShadows = true;
-    
     return newMat;
 }
-
 const capGeometry = new THREE.PlaneGeometry(2000, 2000);
 const capMaterial = new THREE.MeshStandardMaterial({
-    color: 0x6b5f52, roughness: 0.95, metalness: 0.0,
+    color: 0x6b5f52,
+    roughness: 0.95,
+    metalness: 0.0,
     stencilWrite: true,
-    stencilRef:   0,
-    stencilFunc:  THREE.NotEqualStencilFunc,
-    stencilFail:  THREE.KeepStencilOp,
+    stencilRef: 0,
+    stencilFunc: THREE.NotEqualStencilFunc,
+    stencilFail: THREE.KeepStencilOp,
     stencilZFail: THREE.KeepStencilOp,
     stencilZPass: THREE.ReplaceStencilOp,
     clippingPlanes: [roofCutPlane],
@@ -785,15 +739,18 @@ const capMesh = new THREE.Mesh(capGeometry, capMaterial);
 capMesh.renderOrder = 2;
 capMesh.castShadow = false;
 capMesh.receiveShadow = true;
-
-
 function makeStencilPass(sourceMesh, side, depthPassOp, renderOrder) {
     const mat = new THREE.MeshBasicMaterial({
-        side, colorWrite: false, depthWrite: false, depthTest: true,
-        clippingPlanes: [roofCutPlane], clipShadows: true,
-        stencilWrite: true, stencilRef: 1,
-        stencilFunc:  THREE.AlwaysStencilFunc,
-        stencilFail:  THREE.KeepStencilOp,
+        side,
+        colorWrite: false,
+        depthWrite: false,
+        depthTest: true,
+        clippingPlanes: [roofCutPlane],
+        clipShadows: true,
+        stencilWrite: true,
+        stencilRef: 1,
+        stencilFunc: THREE.AlwaysStencilFunc,
+        stencilFail: THREE.KeepStencilOp,
         stencilZFail: THREE.KeepStencilOp,
         stencilZPass: depthPassOp,
     });
@@ -804,14 +761,9 @@ function makeStencilPass(sourceMesh, side, depthPassOp, renderOrder) {
     return stencilMesh;
 }
 
-
-// Generated from model.jpg's own luminance (height-from-grayscale + Sobel
-// gradients), so it lines up with the cave's existing UVs with no re-unwrap
-// needed. Gives the rock actual per-pixel surface detail under the torch
-// lights instead of flat-shaded diffuse-only geometry.
+// ==================== CAVE MODEL ====================
 const caveNormalMap = new THREE.TextureLoader().load('./models/cave_normal.png');
 caveNormalMap.colorSpace = THREE.NoColorSpace;
-
 const mtlLoader = new MTLLoader();
 mtlLoader.load(
     './models/CaveOptimizedobj.mtl',
@@ -832,37 +784,59 @@ mtlLoader.load(
                     child.receiveShadow = true;
                 });
                 obj.updateMatrixWorld(true);
-
                 const stencilPassGroup = new THREE.Group();
                 obj.traverse((child) => {
                     if (!child.isMesh) return;
-                    const backPass  = makeStencilPass(child, THREE.BackSide,  THREE.IncrementWrapStencilOp, 0);
-                    const frontPass = makeStencilPass(child, THREE.FrontSide, THREE.DecrementWrapStencilOp, 1);
+                    const backPass = makeStencilPass(
+                        child,
+                        THREE.BackSide,
+                        THREE.IncrementWrapStencilOp,
+                        0,
+                    );
+                    const frontPass = makeStencilPass(
+                        child,
+                        THREE.FrontSide,
+                        THREE.DecrementWrapStencilOp,
+                        1,
+                    );
                     stencilPassGroup.add(backPass, frontPass);
                 });
-                                scene.add(obj);
+                scene.add(obj);
                 scene.add(stencilPassGroup);
-                caveRoot = obj;             // remember the cave for raycasting
-                mountTorchesOnWall();       // snap the torches onto the wall
-                console.log('Cave loaded. Stencil cap passes:', stencilPassGroup.children.length);
+                caveRoot = obj;
+                mountTorchesOnWall();
             },
-            (xhr)   => console.log((xhr.loaded / xhr.total * 100).toFixed(1) + '% loaded OBJ'),
-            (error) => console.error('Error loading OBJ:', error)
+            undefined,
+            (error) => console.error('Error loading OBJ:', error),
         );
     },
-    (xhr)   => console.log((xhr.loaded / xhr.total * 100).toFixed(1) + '% loaded MTL'),
-    (error) => console.error('Error loading MTL:', error)
+    undefined,
+    (error) => console.error('Error loading MTL:', error),
 );
 
+// ==================== WATER ====================
 const WATER_SIZE = 40;
 const WATER_SEGMENTS = 200;
-
 const WAVES = [
-    { amp: 0.060, dir: new THREE.Vector2( 1.0,  0.6).normalize(), freq: 1.1, speed: 0.9 },
-    { amp: 0.025, dir: new THREE.Vector2(-0.7,  1.0).normalize(), freq: 2.3, speed: 1.3 },
-    { amp: 0.008, dir: new THREE.Vector2( 0.5, -0.9).normalize(), freq: 5.1, speed: 1.7 },
+    {
+        amp: 0.06,
+        dir: new THREE.Vector2(1.0, 0.6).normalize(),
+        freq: 1.1,
+        speed: 0.9,
+    },
+    {
+        amp: 0.025,
+        dir: new THREE.Vector2(-0.7, 1.0).normalize(),
+        freq: 2.3,
+        speed: 1.3,
+    },
+    {
+        amp: 0.008,
+        dir: new THREE.Vector2(0.5, -0.9).normalize(),
+        freq: 5.1,
+        speed: 1.7,
+    },
 ];
-
 function waveHeight(x, y, t, ampScale = 1.0) {
     let h = 0.0;
     for (const w of WAVES) {
@@ -871,68 +845,133 @@ function waveHeight(x, y, t, ampScale = 1.0) {
     }
     return h;
 }
-
-// --- INTERSECTION FOAM RENDER TARGET ---
-
 const MAX_WATER_LIGHTS = 10;
-
-// --- OAR RIPPLES ---
-// Expanding decaying rings injected into the water surface where an oar blade
-// strikes the water. Kept in sync with the matching #defines in the shader.
-const MAX_RIPPLES   = 12;
-const RIPPLE_LIFE   = 2.6;   // seconds a ripple stays alive (== R_LIFE in shader)
-const RIPPLE_GAP    = 0.18;  // min seconds between ripples from the same oar
-
-// Half-resolution is plenty for the water-refraction depth sample (it's
-// blurred by the wave shader anyway) and cuts the fill cost of this extra
-// full-scene pass by 4x.
+const MAX_RIPPLES = 12;
+const RIPPLE_LIFE = 2.6;
+const RIPPLE_GAP = 0.18;
 const DEPTH_TARGET_SCALE = 0.5;
 const depthTarget = new THREE.WebGLRenderTarget(
     Math.max(1, Math.floor(window.innerWidth * DEPTH_TARGET_SCALE)),
-    Math.max(1, Math.floor(window.innerHeight * DEPTH_TARGET_SCALE))
+    Math.max(1, Math.floor(window.innerHeight * DEPTH_TARGET_SCALE)),
 );
 depthTarget.depthTexture = new THREE.DepthTexture();
 depthTarget.depthTexture.type = THREE.UnsignedShortType;
-
 const waterUniforms = {
-    tDepth:          { value: depthTarget.depthTexture },
-    cameraNear:      { value: camera.near },
-    cameraFar:       { value: camera.far },
-    resolution:      { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
-    uTime:           { value: 0 },
-    uAmpScale:       { value: 1.0 },
-    uExposure:       { value: 1.15 },   // keep in sync with renderer.toneMappingExposure
-    uBaseColor:      { value: new THREE.Color(0x1f6f7a) }, // Bright cyan (Claude's)
-    uDeepColor:      { value: new THREE.Color(0x041a1e) }, // Dark teal (Yours)
-    uAmbient:        { value: new THREE.Color(0x05080a) }, // Extremely dark ambient shadow
-    uOpacity:        { value: 0.62 },
-    uAmp:            { value: WAVES.map(w => w.amp) },
-    uDir:            { value: WAVES.map(w => w.dir.clone()) },
-    uFreq:           { value: WAVES.map(w => w.freq) },
-    uSpeed:          { value: WAVES.map(w => w.speed) },
-    uLightCount:     { value: 0 },
-    uLightPos:       { value: Array.from({ length: MAX_WATER_LIGHTS }, () => new THREE.Vector3()) },
-    uLightColor:     { value: Array.from({ length: MAX_WATER_LIGHTS }, () => new THREE.Color()) },
-    uLightIntensity: { value: new Array(MAX_WATER_LIGHTS).fill(0) },
-
-    // Oar-strike ripples
-    uRippleCount:    { value: 0 },
-    uRippleOrigin:   { value: Array.from({ length: MAX_RIPPLES }, () => new THREE.Vector2()) },
-    uRippleStart:    { value: new Array(MAX_RIPPLES).fill(-1000) },
-
-    // Surface look / reflectivity
-    uReflectivity:   { value: 0.9 },                       // strength of the fresnel sheen
-    uSparkle:        { value: 1.0 },                       // fine micro-ripple normal strength
-    uSpecStrength:   { value: 1.0 },                       // overall glint brightness
-    uDetailSpeed:    { value: 0.35 },                      // how fast the fine ripples drift
-    uSkyColor:       { value: new THREE.Color(0x1a3a44) }, // cool tint reflected at grazing angles
-
-    // Boat wake / displacement
-    uBoatPos:        { value: new THREE.Vector2() },       // boat world XY
-    uBoatDir:        { value: new THREE.Vector2(0, 1) },   // boat forward (world XY, normalized)
-    uBoatSpeed:      { value: 0.0 },                       // 0 when stopped -> no wake
+    tDepth: {
+        value: depthTarget.depthTexture,
+    },
+    cameraNear: {
+        value: camera.near,
+    },
+    cameraFar: {
+        value: camera.far,
+    },
+    resolution: {
+        value: new THREE.Vector2(window.innerWidth, window.innerHeight),
+    },
+    uTime: {
+        value: 0,
+    },
+    uAmpScale: {
+        value: 1.0,
+    },
+    uExposure: {
+        value: 1.15,
+    },
+    uBaseColor: {
+        value: new THREE.Color(0x1f6f7a),
+    },
+    uDeepColor: {
+        value: new THREE.Color(0x041a1e),
+    },
+    uAmbient: {
+        value: new THREE.Color(0x05080a),
+    },
+    uOpacity: {
+        value: 0.62,
+    },
+    uAmp: {
+        value: WAVES.map((w) => w.amp),
+    },
+    uDir: {
+        value: WAVES.map((w) => w.dir.clone()),
+    },
+    uFreq: {
+        value: WAVES.map((w) => w.freq),
+    },
+    uSpeed: {
+        value: WAVES.map((w) => w.speed),
+    },
+    uLightCount: {
+        value: 0,
+    },
+    uLightPos: {
+        value: Array.from(
+            {
+                length: MAX_WATER_LIGHTS,
+            },
+            () => new THREE.Vector3(),
+        ),
+    },
+    uLightColor: {
+        value: Array.from(
+            {
+                length: MAX_WATER_LIGHTS,
+            },
+            () => new THREE.Color(),
+        ),
+    },
+    uLightIntensity: {
+        value: new Array(MAX_WATER_LIGHTS).fill(0),
+    },
+    uRippleCount: {
+        value: 0,
+    },
+    uRippleOrigin: {
+        value: Array.from(
+            {
+                length: MAX_RIPPLES,
+            },
+            () => new THREE.Vector2(),
+        ),
+    },
+    uRippleStart: {
+        value: new Array(MAX_RIPPLES).fill(-1000),
+    },
+    uReflectivity: {
+        value: 0.9,
+    },
+    uSparkle: {
+        value: 1.0,
+    },
+    uSpecStrength: {
+        value: 1.0,
+    },
+    uDetailSpeed: {
+        value: 0.35,
+    },
+    uSkyColor: {
+        value: new THREE.Color(0x1a3a44),
+    },
+    uMoonPos: {
+        value: MOON_WORLD, // same instance placeMoon() writes into
+    },
+    uMoonColor: {
+        value: new THREE.Color(0xd8e6ff),
+    },
+    uMoonGlade: {
+        value: moonParams.reflection,
+    },
+    uBoatPos: {
+        value: new THREE.Vector2(),
+    },
+    uBoatDir: {
+        value: new THREE.Vector2(0, 1),
+    },
+    uBoatSpeed: {
+        value: 0.0,
+    },
 };
-
 const waterVertex = `
     #include <clipping_planes_pars_vertex>
 
@@ -1079,7 +1118,6 @@ const waterVertex = `
         gl_Position = projectionMatrix * mvPosition;
     }
 `;
-
 const waterFragment = `
     #include <clipping_planes_pars_fragment>
     #include <packing>
@@ -1102,6 +1140,9 @@ const waterFragment = `
     uniform float uSpecStrength;
     uniform float uDetailSpeed;
     uniform vec3  uSkyColor;
+    uniform vec3  uMoonPos;
+    uniform vec3  uMoonColor;
+    uniform float uMoonGlade;
 
     // Foam uniforms
     uniform sampler2D tDepth;
@@ -1189,6 +1230,37 @@ const waterFragment = `
         float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
         color += uSkyColor * fres * uReflectivity;               // reflective sheen
 
+        // ---- Moon glade: true specular reflection of the moon ----
+        // Because it uses the same wave + detail normals as everything else,
+        // the glade stretches toward the viewer, wobbles with the swell and
+        // shatters into twinkling glints instead of reading as a flat decal.
+        float gladeAlpha = 0.0;
+        // Keep it out of the cave interior (rock would occlude the sky).
+        float moonMask = smoothstep(0.0, 3.0, vWorldPos.y);
+        if (uMoonGlade > 0.001 && moonMask > 0.001) {
+            vec3  Lm = normalize(uMoonPos - vWorldPos);
+            float rl = max(dot(R, Lm), 0.0);
+
+            float body    = pow(rl, 18.0);    // wide soft path of light
+            float shimmer = pow(rl, 90.0);    // mid streaks riding the swell
+            float sparkle = pow(rl, 750.0);   // pinpoint glitter
+
+            // Cheap per-spot flicker so sparkles twinkle out of sync.
+            float tw = 0.7 + 0.3 * sin(uTime * 4.0
+                                       + vWorldPos.x * 37.0
+                                       + vWorldPos.y * 23.0);
+
+            // Water reflects more at grazing angles, so weight by fresnel.
+            float mf = 0.2 + 0.8 * clamp(fres * 6.0, 0.0, 1.0);
+
+            vec3 glade = uMoonColor
+                       * (body * 0.25 + shimmer * 0.9 + sparkle * 5.0 * tw)
+                       * mf * uMoonGlade * 2.0 * moonMask;
+            color += glade;
+            // Let the bright path read solid instead of see-through.
+            gladeAlpha = clamp((body * 0.35 + shimmer * 0.5) * uMoonGlade * mf, 0.0, 0.4);
+        }
+
         // 2. Calculate the Intersection Foam
         vec2 screenPos = gl_FragCoord.xy / resolution;
         float sceneDepthRaw = texture2D(tDepth, screenPos).x;
@@ -1208,73 +1280,65 @@ const waterFragment = `
         // Grazing angles read a touch more solid/reflective, but never fully opaque
         // so the water keeps some translucency and feels fluid rather than dense.
         float alpha = mix(uOpacity, min(uOpacity + 0.22, 0.92), fres);
-        gl_FragColor = vec4(color, clamp(alpha + foam * 0.5, 0.0, 1.0));
+        gl_FragColor = vec4(color, clamp(alpha + foam * 0.5 + gladeAlpha, 0.0, 1.0));
     }
 `;
-
-const waterGeometry = new THREE.PlaneGeometry(WATER_SIZE, WATER_SIZE, WATER_SEGMENTS, WATER_SEGMENTS);
+const waterGeometry = new THREE.PlaneGeometry(
+    WATER_SIZE,
+    WATER_SIZE,
+    WATER_SEGMENTS,
+    WATER_SEGMENTS,
+);
 const waterMaterial = new THREE.ShaderMaterial({
     uniforms: waterUniforms,
     vertexShader: waterVertex,
     fragmentShader: waterFragment,
     transparent: true,
-    toneMapped: false,   
+    toneMapped: false,
     side: THREE.DoubleSide,
-    clipping: false,                // Change this to false
-    // Remove the clippingPlanes property entirely
+    clipping: false,
 });
-
 const water = new THREE.Mesh(waterGeometry, waterMaterial);
-
 water.position.set(0, 0, -1.0);
 scene.add(water);
-
-// --- OAR RIPPLE SYSTEM ---
-// The water plane sits in world XY (only offset on Z), so a blade's world XY
-// maps straight onto the shader's local plane coordinates.
-const WATER_BASE_Z = water.position.z;        // -1.0
-const ripples = [];                            // { x, y, start }
-
-// Boat-speed tracking for the wake displacement.
+const WATER_BASE_Z = water.position.z;
+const ripples = [];
 const _boatPrevPos = new THREE.Vector3();
-let   _boatPrevValid = false;
-
+let _boatPrevValid = false;
 function spawnRipple(x, y, t) {
-    ripples.push({ x, y, start: t });
+    ripples.push({
+        x,
+        y,
+        start: t,
+    });
     if (ripples.length > MAX_RIPPLES) ripples.shift();
 }
-
-// Push the live ripple list into the shader uniforms.
 function uploadRipples(t) {
     const origins = waterUniforms.uRippleOrigin.value;
-    const starts  = waterUniforms.uRippleStart.value;
+    const starts = waterUniforms.uRippleStart.value;
     let n = 0;
     for (let i = 0; i < ripples.length && n < MAX_RIPPLES; i++) {
         const r = ripples[i];
-        if (t - r.start > RIPPLE_LIFE) continue;   // expired
+        if (t - r.start > RIPPLE_LIFE) continue;
         origins[n].set(r.x, r.y);
         starts[n] = r.start;
         n++;
     }
     waterUniforms.uRippleCount.value = n;
-    // Drop expired ripples so the array doesn't grow unbounded.
     for (let i = ripples.length - 1; i >= 0; i--) {
         if (t - ripples[i].start > RIPPLE_LIFE) ripples.splice(i, 1);
     }
 }
 
-// Blade-tip offset in each oar's local space, measured once from the mesh.
-// The oar pivots near the rowlock and its handle end is short, so the geometry
-// vertex farthest from the local origin is always the blade tip -- this works
-// regardless of how each oar node's local frame is mirrored or rotated.
+// ==================== OAR RIPPLES ====================
 const _oarTipLocal = new WeakMap();
 function oarTipLocal(oar) {
     let tip = _oarTipLocal.get(oar);
     if (tip) return tip;
     oar.updateWorldMatrix(true, true);
     const inv = new THREE.Matrix4().copy(oar.matrixWorld).invert();
-    const v   = new THREE.Vector3();
-    let best  = null;
+    const v = new THREE.Vector3();
+    let best = null;
     let bestD = -1;
     oar.traverse((c) => {
         if (!c.isMesh || !c.geometry || !c.geometry.attributes.position) return;
@@ -1282,68 +1346,69 @@ function oarTipLocal(oar) {
         for (let i = 0; i < pos.count; i++) {
             v.fromBufferAttribute(pos, i).applyMatrix4(c.matrixWorld).applyMatrix4(inv);
             const d = v.lengthSq();
-            if (d > bestD) { bestD = d; best = v.clone(); }
+            if (d > bestD) {
+                bestD = d;
+                best = v.clone();
+            }
         }
     });
     tip = best || new THREE.Vector3(1, 0, 0);
     _oarTipLocal.set(oar, tip);
     return tip;
 }
-
-// Per-oar submersion state, so we emit one ripple per entry into the water.
-const oarDip = { L: { down: false, last: -1e3 }, R: { down: false, last: -1e3 } };
+const oarDip = {
+    L: {
+        down: false,
+        last: -1e3,
+    },
+    R: {
+        down: false,
+        last: -1e3,
+    },
+};
 const _bladeTip = new THREE.Vector3();
-
 function processOarRipple(oar, state, t, ampScale) {
     if (!oar) return;
     const tip = oarTipLocal(oar);
     oar.updateWorldMatrix(true, false);
     _bladeTip.copy(tip).applyMatrix4(oar.matrixWorld);
-
-    const surfaceZ  = WATER_BASE_Z + waveHeight(_bladeTip.x, _bladeTip.y, t, ampScale);
+    const surfaceZ = WATER_BASE_Z + waveHeight(_bladeTip.x, _bladeTip.y, t, ampScale);
     const submerged = _bladeTip.z < surfaceZ;
-
-    if (submerged && !state.down && (t - state.last) > RIPPLE_GAP) {
+    if (submerged && !state.down && t - state.last > RIPPLE_GAP) {
         spawnRipple(_bladeTip.x, _bladeTip.y, t);
         state.last = t;
     }
     state.down = submerged;
 }
 
-
-
+// ==================== BOAT & OARS ====================
 const boatGroup = new THREE.Group();
 scene.add(boatGroup);
-
-
-const BOAT_LENGTH  = 1.1;           
-const BOAT_HEADING = 0;              
-const BOAT_FLOAT   = 0.12;          
-const BOAT_HIDE_Y  = 15.5;  // rowed deep into the edge-of-map fog bank -> hide him there. The
-                            // bank is ~95% opaque past this line, so both the hide on the way
-                            // out and the reappear on the way back are swallowed by the fog
-                            // instead of popping in clear air (was 9.5, just past the mouth).
-const WORLD_UP   = new THREE.Vector3(0, 0, 1);  
+const BOAT_LENGTH = 1.1;
+const BOAT_HEADING = 0;
+const BOAT_FLOAT = 0.12;
+const BOAT_HIDE_Y = 15.5;
+const WORLD_UP = new THREE.Vector3(0, 0, 1);
 const OAR_L_SIGN = +1;
-const OAR_R_SIGN = -1;              
-const _oarQ      = new THREE.Quaternion();     
-const _oarLiftQ  = new THREE.Quaternion();
-const _oarAxis   = new THREE.Vector3();          
-const _oarLiftAxis = new THREE.Vector3();        
-const _oarParentQ  = new THREE.Quaternion();
+const OAR_R_SIGN = -1;
+const _oarQ = new THREE.Quaternion();
+const _oarLiftQ = new THREE.Quaternion();
+const _oarAxis = new THREE.Vector3();
+const _oarLiftAxis = new THREE.Vector3();
+const _oarParentQ = new THREE.Quaternion();
 const _oarParentInv = new THREE.Quaternion();
-const _oarOutboard  = new THREE.Vector3();
-
-const oars    = { L: null, R: null };
-const oarRest = new WeakMap();       // oar node -> rest quaternion
-
+const _oarOutboard = new THREE.Vector3();
+const oars = {
+    L: null,
+    R: null,
+};
+const oarRest = new WeakMap();
 const fbxLoader = new FBXLoader();
 fbxLoader.load(
     './models/Old_Rowboat_low.fbx',
     (boat) => {
         boat.rotation.y = BOAT_HEADING;
         boat.updateMatrixWorld(true);
-
         let box = new THREE.Box3().setFromObject(boat);
         const size = box.getSize(new THREE.Vector3());
         const longest = Math.max(size.x, size.z) || 1;
@@ -1351,24 +1416,15 @@ fbxLoader.load(
         boat.updateMatrixWorld(true);
         box = new THREE.Box3().setFromObject(boat);
         boat.position.sub(box.getCenter(new THREE.Vector3()));
-
         const junk = [];
         boat.traverse((child) => {
             if (child.isLight || child.isCamera) junk.push(child);
         });
         junk.forEach((n) => n.parent && n.parent.remove(n));
-        if (junk.length) console.log('Rowboat: stripped baked',
-            junk.map((n) => n.type).join(', '));
-
         boat.traverse((child) => {
             if (!child.isMesh) return;
             child.castShadow = true;
             child.receiveShadow = true;
-            // Same fix as the captain below: the hull/oar bounding spheres
-            // don't track where the model visually is once it's driven far
-            // along the river path, so the frustum culler was blinking the
-            // whole boat out of existence at a certain point on the way out
-            // while the oar wake (a water-shader effect) kept going.
             child.frustumCulled = false;
             const src = Array.isArray(child.material) ? child.material[0] : child.material;
             const tex = src && src.map ? src.map : null;
@@ -1376,63 +1432,60 @@ fbxLoader.load(
             child.material = new THREE.MeshStandardMaterial({
                 color: tex ? 0xffffff : 0x6b4a2f,
                 map: tex,
-                roughness: 0.85, metalness: 0.05,
-                // Same bug as the captain: roofCutPlane belongs to the cave
-                // roof/floor cutaway (capMesh), not to objects that move
-                // around in world Y -- it was clipping the boat/oars out of
-                // existence past that fixed Y line.
+                roughness: 0.85,
+                metalness: 0.05,
             });
         });
-
         boatGroup.add(boat);
-
-        // Grab the oar nodes (named Oar_L / Oar_R in the FBX) and store their rest pose.
         oars.L = findBone(boat, 'Oar_L');
         oars.R = findBone(boat, 'Oar_R');
         for (const o of [oars.L, oars.R]) if (o) oarRest.set(o, o.quaternion.clone());
-        console.log('Rowboat loaded. Oars found:',
-            [oars.L && 'L', oars.R && 'R'].filter(Boolean).join(', ') || 'none');
     },
     undefined,
-    (err) => console.error('Error loading rowboat FBX:', err)
+    (err) => console.error('Error loading rowboat FBX:', err),
 );
 
-
-const CAPT_HEIGHT  = 0.62;        
-const CAPT_HEADING = Math.PI;     
-const CAPT_SEAT    = new THREE.Vector3(0, 0.05, 0.04);   
-const CAPT_HAND_LIFT = 0.05;      
-
-const CAPT_ARM_AXIS    = new THREE.Vector3(1, 0, 0);     
-const CAPT_ARM_LOWER   = 0.85;  
-const CAPT_ELBOW_BEND  = 1.15;   
-const CAPT_THIGH_BEND  = 1.45;   
-const CAPT_KNEE_BEND   = -1.5;   
-const CAPT_LEG_SPREAD  = 0.5;    
-const CAPT_SPREAD_AXIS = new THREE.Vector3(0, 0, 1);  
-const _captQ = new THREE.Quaternion();                    
-
+// ==================== CAPTAIN (RIGGED ROWER) ====================
+const CAPT_HEIGHT = 0.62;
+const CAPT_HEADING = Math.PI;
+const CAPT_SEAT = new THREE.Vector3(0, 0.05, 0.04);
+const CAPT_HAND_LIFT = 0.05;
+const CAPT_ARM_AXIS = new THREE.Vector3(1, 0, 0);
+const CAPT_THIGH_BEND = 1.45;
+const CAPT_KNEE_BEND = -1.5;
+const CAPT_LEG_SPREAD = 0.5;
+const CAPT_SPREAD_AXIS = new THREE.Vector3(0, 0, 1);
+const _captQ = new THREE.Quaternion();
 const captGroup = new THREE.Group();
 boatGroup.add(captGroup);
-
-const captBones = { armL: null, foreL: null, handL: null, armR: null, foreR: null, handR: null };
-const captRest  = new WeakMap();  // bone -> rest quaternion
-let captArmLen = 0, captForeLen = 0;   // world-space upper-arm and forearm lengths (set on load)
-
-
+const captBones = {
+    armL: null,
+    foreL: null,
+    handL: null,
+    armR: null,
+    foreR: null,
+    handR: null,
+};
+const captRest = new WeakMap();
+let captArmLen = 0,
+    captForeLen = 0;
 const _ikUp = new THREE.Vector3(0, 1, 0);
-const _ikS = new THREE.Vector3(), _ikE = new THREE.Vector3(), _ikN = new THREE.Vector3();
-const _ikPerp = new THREE.Vector3(), _ikDir = new THREE.Vector3(), _ikHandle = new THREE.Vector3();
-const _ikLift = new THREE.Vector3(), _ikTgt = new THREE.Vector3(), _ikUpW = new THREE.Vector3();
-const _ikW = new THREE.Quaternion(), _ikPW = new THREE.Quaternion();
+const _ikS = new THREE.Vector3(),
+    _ikE = new THREE.Vector3(),
+    _ikN = new THREE.Vector3();
+const _ikPerp = new THREE.Vector3(),
+    _ikDir = new THREE.Vector3(),
+    _ikHandle = new THREE.Vector3();
+const _ikLift = new THREE.Vector3(),
+    _ikTgt = new THREE.Vector3(),
+    _ikUpW = new THREE.Vector3();
+const _ikW = new THREE.Quaternion(),
+    _ikPW = new THREE.Quaternion();
 const _ikBoatQ = new THREE.Quaternion();
-
-// orient `bone` so its local +Y points along worldDir (roll uncontrolled)
 function aimBoneWorld(bone, worldDir, parentWorldQuat) {
     _ikW.setFromUnitVectors(_ikUp, worldDir);
     bone.quaternion.copy(parentWorldQuat).invert().multiply(_ikW);
 }
-
 function solveArmIK(armBone, foreBone, target, L1, L2, refUp, elbowAngle) {
     armBone.updateWorldMatrix(true, false);
     armBone.getWorldPosition(_ikS);
@@ -1441,138 +1494,114 @@ function solveArmIK(armBone, foreBone, target, L1, L2, refUp, elbowAngle) {
     const maxReach = (L1 + L2) * params.armReach;
     d = THREE.MathUtils.clamp(d, Math.abs(L1 - L2) + 1e-3, maxReach);
     _ikN.copy(_ikDir).normalize();
-    _ikTgt.copy(_ikS).addScaledVector(_ikN, d);   
+    _ikTgt.copy(_ikS).addScaledVector(_ikN, d);
     const cosA = THREE.MathUtils.clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1);
     const a = Math.acos(cosA);
     _ikPerp.copy(refUp).addScaledVector(_ikN, -refUp.dot(_ikN));
     if (_ikPerp.lengthSq() < 1e-6) _ikPerp.set(0, 0, 1).addScaledVector(_ikN, -_ikN.z);
     _ikPerp.normalize().applyAxisAngle(_ikN, elbowAngle);
-    _ikE.copy(_ikS).addScaledVector(_ikN, Math.cos(a) * L1).addScaledVector(_ikPerp, Math.sin(a) * L1);
+    _ikE.copy(_ikS)
+        .addScaledVector(_ikN, Math.cos(a) * L1)
+        .addScaledVector(_ikPerp, Math.sin(a) * L1);
     armBone.parent.getWorldQuaternion(_ikPW);
     aimBoneWorld(armBone, _ikDir.copy(_ikE).sub(_ikS).normalize(), _ikPW);
     armBone.updateWorldMatrix(false, false);
     armBone.getWorldQuaternion(_ikPW);
     aimBoneWorld(foreBone, _ikDir.copy(_ikTgt).sub(_ikE).normalize(), _ikPW);
 }
-
-// world position of an oar's handle (inboard end), where the hand grips
 function oarHandle(oarNode, handleSign, out) {
     out.set(handleSign * params.oarGrip, 0, 0);
     oarNode.updateWorldMatrix(true, false);
     return oarNode.localToWorld(out);
 }
-
-const _gripFwd    = new THREE.Vector3();
-const _gripWorld  = new THREE.Quaternion();
-const _gripRollQ  = new THREE.Quaternion();
+const _gripFwd = new THREE.Vector3();
+const _gripWorld = new THREE.Quaternion();
+const _gripRollQ = new THREE.Quaternion();
 const _gripParent = new THREE.Quaternion();
 function gripHand(handBone, foreBone, rollRad) {
     if (!handBone || !foreBone) return;
     foreBone.updateWorldMatrix(true, false);
     foreBone.getWorldQuaternion(_gripWorld);
-    _gripFwd.set(0, 1, 0).applyQuaternion(_gripWorld).normalize();   // forearm aim, world
-    _gripWorld.setFromUnitVectors(_ikUp, _gripFwd);                  // hand +Y -> forearm dir
-    _gripRollQ.setFromAxisAngle(_ikUp, rollRad);                     // roll about hand length
+    _gripFwd.set(0, 1, 0).applyQuaternion(_gripWorld).normalize();
+    _gripWorld.setFromUnitVectors(_ikUp, _gripFwd);
+    _gripRollQ.setFromAxisAngle(_ikUp, rollRad);
     _gripWorld.multiply(_gripRollQ);
     handBone.parent.getWorldQuaternion(_gripParent);
     handBone.quaternion.copy(_gripParent).invert().multiply(_gripWorld);
 }
-
-const captLoader = new GLTFLoader();   // own instance; the bat's gltfLoader is declared later
+const captLoader = new GLTFLoader();
 captLoader.load(
     './models/captain/captain-clark.gltf',
     (gltf) => {
         const model = gltf.scene;
-
         model.updateMatrixWorld(true);
         const box = new THREE.Box3().setFromObject(model);
         const h = box.getSize(new THREE.Vector3()).y || 1;
         model.scale.multiplyScalar(CAPT_HEIGHT / h);
         model.updateMatrixWorld(true);
-
         const sitThigh = (boneName, spreadSign) => {
             const b = findBone(model, boneName);
             if (!b) return;
             b.quaternion
-                .multiply(_captQ.setFromAxisAngle(CAPT_ARM_AXIS,    CAPT_THIGH_BEND))
+                .multiply(_captQ.setFromAxisAngle(CAPT_ARM_AXIS, CAPT_THIGH_BEND))
                 .multiply(_captQ.setFromAxisAngle(CAPT_SPREAD_AXIS, CAPT_LEG_SPREAD * spreadSign));
         };
         const sitKnee = (boneName) => {
             const b = findBone(model, boneName);
             if (b) b.quaternion.multiply(_captQ.setFromAxisAngle(CAPT_ARM_AXIS, CAPT_KNEE_BEND));
         };
-        sitThigh('mixamorig:LeftUpLeg',  -1);
+        sitThigh('mixamorig:LeftUpLeg', -1);
         sitThigh('mixamorig:RightUpLeg', +1);
         sitKnee('mixamorig:LeftLeg');
         sitKnee('mixamorig:RightLeg');
         model.updateMatrixWorld(true);
-
         const hips = findBone(model, 'mixamorig:Hips');
         if (hips) model.position.sub(hips.getWorldPosition(new THREE.Vector3()));
-
         model.traverse((child) => {
             if (!child.isMesh) return;
             child.castShadow = true;
             child.receiveShadow = true;
             child.frustumCulled = false;
-            // NOTE: intentionally NOT applying roofCutPlane here. That plane
-            // belongs to the cave roof/floor stencil cutaway (capMesh) --
-            // it clips anything past a fixed world Y, which is fine for a
-            // static cutaway plane but was also clipping the captain
-            // himself out of existence once the boat crossed that Y line
-            // (e.g. mid panic-retreat), making him vanish for part of the
-            // ride.
         });
-
         captGroup.rotation.y = CAPT_HEADING;
         captGroup.position.copy(CAPT_SEAT);
         captGroup.add(model);
-
-        captBones.armL  = findBone(model, 'mixamorig:LeftArm');
+        captBones.armL = findBone(model, 'mixamorig:LeftArm');
         captBones.foreL = findBone(model, 'mixamorig:LeftForeArm');
         captBones.handL = findBone(model, 'mixamorig:LeftHand');
-        captBones.armR  = findBone(model, 'mixamorig:RightArm');
+        captBones.armR = findBone(model, 'mixamorig:RightArm');
         captBones.foreR = findBone(model, 'mixamorig:RightForeArm');
         captBones.handR = findBone(model, 'mixamorig:RightHand');
         for (const b of Object.values(captBones)) if (b) captRest.set(b, b.quaternion.clone());
-
-        // Measure world-space arm segment lengths (T-pose) for the IK solver.
         model.updateWorldMatrix(true, true);
         if (captBones.armL && captBones.foreL && captBones.handL) {
             const s = captBones.armL.getWorldPosition(new THREE.Vector3());
             const e = captBones.foreL.getWorldPosition(new THREE.Vector3());
             const w = captBones.handL.getWorldPosition(new THREE.Vector3());
-            captArmLen  = s.distanceTo(e);
+            captArmLen = s.distanceTo(e);
             captForeLen = e.distanceTo(w);
         }
-        console.log('Captain loaded. armLen', captArmLen.toFixed(3), 'foreLen', captForeLen.toFixed(3));
     },
     undefined,
-    (err) => console.error('Error loading captain glTF:', err)
+    (err) => console.error('Error loading captain glTF:', err),
 );
-
 let boatProgress = 0;
-
 window.addEventListener('resize', () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
     depthTarget.setSize(
         Math.max(1, Math.floor(window.innerWidth * DEPTH_TARGET_SCALE)),
-        Math.max(1, Math.floor(window.innerHeight * DEPTH_TARGET_SCALE))
+        Math.max(1, Math.floor(window.innerHeight * DEPTH_TARGET_SCALE)),
     );
 });
-
 const clock = new THREE.Clock();
-const _capTarget = new THREE.Vector3();
 
-// ---------------- FIREFLIES ----------------
-// ---------------- FIREFLIES ----------------
+// ==================== FIREFLIES ====================
 const FIREFLY_COUNT = 45;
 const fireflyPositions = new Float32Array(FIREFLY_COUNT * 3);
-const fireflyPhase     = new Float32Array(FIREFLY_COUNT);
-const fireflySeed      = new Float32Array(FIREFLY_COUNT * 3);
-
+const fireflyPhase = new Float32Array(FIREFLY_COUNT);
+const fireflySeed = new Float32Array(FIREFLY_COUNT * 3);
 for (let i = 0; i < FIREFLY_COUNT; i++) {
     fireflyPositions[i * 3 + 0] = (Math.random() - 0.5) * 8;
     fireflyPositions[i * 3 + 1] = (Math.random() - 0.5) * 15;
@@ -1582,18 +1611,21 @@ for (let i = 0; i < FIREFLY_COUNT; i++) {
     fireflySeed[i * 3 + 1] = Math.random() * 100;
     fireflySeed[i * 3 + 2] = Math.random() * 100;
 }
-
 const fireflyGeometry = new THREE.BufferGeometry();
 fireflyGeometry.setAttribute('position', new THREE.BufferAttribute(fireflyPositions, 3));
 fireflyGeometry.setAttribute('aPhase', new THREE.BufferAttribute(fireflyPhase, 1));
 fireflyGeometry.setAttribute('aSeed', new THREE.BufferAttribute(fireflySeed, 3));
-
 const fireflyUniforms = {
-    uTime:  { value: 0 },
-    uColor: { value: new THREE.Color(0xb6ff6e) },
-    uSize:  { value: 60.0 },
+    uTime: {
+        value: 0,
+    },
+    uColor: {
+        value: new THREE.Color(0xb6ff6e),
+    },
+    uSize: {
+        value: 60.0,
+    },
 };
-
 const fireflyVertex = `
     uniform float uTime;
     uniform float uSize;
@@ -1613,7 +1645,6 @@ const fireflyVertex = `
         gl_Position = projectionMatrix * mv;
         gl_PointSize = uSize * (1.0 / -mv.z) * (0.6 + 0.4 * vGlow);
     }`;
-
 const fireflyFragment = `
     uniform vec3 uColor;
     varying float vGlow;
@@ -1624,7 +1655,6 @@ const fireflyFragment = `
         if (core < 0.02) discard;
         gl_FragColor = vec4(uColor * (0.6 + vGlow), core * core);
     }`;
-
 const fireflyMaterial = new THREE.ShaderMaterial({
     uniforms: fireflyUniforms,
     vertexShader: fireflyVertex,
@@ -1633,41 +1663,38 @@ const fireflyMaterial = new THREE.ShaderMaterial({
     depthWrite: false,
     blending: THREE.AdditiveBlending,
 });
-
 const fireflies = new THREE.Points(fireflyGeometry, fireflyMaterial);
 fireflies.frustumCulled = false;
 scene.add(fireflies);
 
-// ---------------- EDGE-OF-MAP FOG BANK ----------------
-// A stack of big vertical noise sheets across the open water past the cave
-// mouth (+Y): light wisps where it starts (~y 9), a near-solid wall by y ~16.
-// It exists so the captain (BOAT_HIDE_Y) and the bats (BAT_GONE_Y / the
-// return-flight spawn band) can despawn/respawn INSIDE the dense part instead
-// of popping in clear air -- and it closes off the map edge with a moody wall
-// instead of water that just ends.
-//
-// Perf: 6 flat quads sharing ONE compiled shader program (2x 3-octave value
-// noise, alpha only), depthWrite off, and skipped entirely in the water
-// depth pre-pass (same trick as batsGroup). Fill cost is confined to the
-// screen area the bank actually covers; per-frame JS is 2 uniform writes
-// per sheet. Flying through is smoothed by a camera-distance fade so a
-// sheet never clips as a hard card across the view.
-// Moonlit grey-blue, well above the 0x05060a background -- the bank must
-// READ as a dark cloud, not just occlude. Internal contrast comes from the
-// density term scaling the color in the shader.
+// ==================== EDGE FOG ====================
 const EDGE_FOG_COLOR = new THREE.Color(0x323c52);
-// y = where the sheet stands; a = its base opacity. Ramped so the bank
-// thickens with depth. Cumulative transmittance past the last sheet is
-// under 0.1% -- anything despawning back there is already invisible.
 const EDGE_FOG_LAYERS = [
-    { y:  9.0, a: 0.30 },
-    { y: 10.8, a: 0.45 },
-    { y: 12.4, a: 0.60 },
-    { y: 13.8, a: 0.70 },
-    { y: 15.0, a: 0.85 },
-    { y: 16.2, a: 0.95 },
+    {
+        y: 9.0,
+        a: 0.3,
+    },
+    {
+        y: 10.8,
+        a: 0.45,
+    },
+    {
+        y: 12.4,
+        a: 0.6,
+    },
+    {
+        y: 13.8,
+        a: 0.7,
+    },
+    {
+        y: 15.0,
+        a: 0.85,
+    },
+    {
+        y: 16.2,
+        a: 0.95,
+    },
 ];
-
 const edgeFogVert = `
     varying vec3 vWorldPos;
     void main() {
@@ -1675,11 +1702,12 @@ const edgeFogVert = `
         vWorldPos = wp.xyz;
         gl_Position = projectionMatrix * viewMatrix * wp;
     }`;
-
 const edgeFogFrag = `
     uniform float uTime;
     uniform float uAlpha;
     uniform float uMul;
+    uniform float uFacing; // view-angle cross-fade, set per frame in JS
+    uniform float uCross;  // 1 on sheets that run along the bank's depth
     uniform vec3  uColor;
     varying vec3  vWorldPos;
 
@@ -1692,19 +1720,38 @@ const edgeFogFrag = `
     }
     float efFbm(vec2 p){
         float v = 0.0, a = 0.5;
-        for (int i = 0; i < 3; i++){ v += a * efNoise(p); p *= 2.13; a *= 0.5; }
+        for (int i = 0; i < 4; i++){ v += a * efNoise(p); p *= 2.13; a *= 0.5; }
         return v;
     }
 
     void main(){
-        // World-space sample; each sheet's own Y offsets the noise slice so
-        // the stacked layers never show the same pattern.
-        vec2 p = vec2(vWorldPos.x * 0.28 + vWorldPos.y * 1.7, vWorldPos.z * 0.55);
-        float n1 = efFbm(p       + vec2( uTime * 0.045, uTime * 0.012));
-        float n2 = efFbm(p * 1.9 + vec2(-uTime * 0.030, uTime * 0.020) + 4.7);
+        // World-space sample; the density field is anchored to the world, so
+        // the sheets can swivel to face the camera without the pattern moving.
+        // Second component is height, with a slow upward roll.
+        // The y-term in BOTH components keeps the pattern 2D on every sheet
+        // orientation (on horizontal sheets z is constant, so without it the
+        // noise would collapse into 1D diagonal stripes).
+        vec2 p = vec2(vWorldPos.x * 0.28 + vWorldPos.y * 1.7,
+                      vWorldPos.z * 0.55 + vWorldPos.y * 0.31 - uTime * 0.018);
+        vec2 d1 = vec2( uTime * 0.045, uTime * 0.012);
+        vec2 d2 = vec2(-uTime * 0.030, uTime * 0.020);
+
+        // Low-frequency warp field bends the fbm into curling, cauliflower
+        // billows instead of flat streaks.
+        float w  = efFbm(p * 1.35 + d1 * 2.0);
+        vec2 wp2 = p + (w - 0.5) * 1.1;
+
+        float n1 = efFbm(wp2 + d1);
+        float n2 = efFbm(wp2 * 1.9 + d2 + 4.7);
         float billow  = n1 * 0.65 + n2 * 0.45;
-        float density = smoothstep(0.22, 0.80, billow);
-        density = mix(0.45, 1.0, density);   // it's a bank, not puffs -- never open a full hole
+        float density = smoothstep(0.20, 0.82, billow);
+        density = mix(0.42, 1.0, density);   // it's a bank, not puffs -- never open a full hole
+
+        // Cheap self-shading: sample the same field a little higher up
+        // (reusing the warp). Denser-than-above reads as a moonlit billow
+        // top, thinner as a shaded crevice -- gives the bank 3D relief.
+        float nUp    = efFbm(wp2 + vec2(0.06, 0.44) + d1);
+        float relief = clamp((n1 - nUp) * 2.8, -0.45, 0.9);
 
         // Soft edges: meets the water at the bottom, and instead of a flat
         // top fade, the skyline is carved by the same noise so the bank
@@ -1718,243 +1765,209 @@ const edgeFogFrag = `
         // clips a hard sheet across the screen.
         float camFade = smoothstep(0.4, 2.6, distance(cameraPosition, vWorldPos));
 
-        float alpha = uAlpha * uMul * density * fade * camFade;
+        float alpha = uAlpha * uMul * uFacing * density * fade * camFade;
+        // Depth ramp for cross sheets: thin at the bank's front edge (~y 8),
+        // full further in -- mirrors the front layers' alpha ramp and keeps
+        // the fog pinned to the edge of the world.
+        alpha *= mix(1.0, smoothstep(8.0, 15.0, vWorldPos.y), uCross);
         if (alpha < 0.004) discard;
-        // strong dense-vs-thin contrast so the churn is actually visible:
-        // thin wisps fall toward the background, thick billows catch "light"
-        gl_FragColor = vec4(uColor * (0.55 + density * 1.1), alpha);
+        // dense billows catch light on their tops, crevices fall into shadow
+        gl_FragColor = vec4(uColor * (0.5 + density * 0.9 + relief * 0.85), alpha);
     }`;
-
+// Front sheets face the scene (normal along Y); cross sheets run along the
+// bank's depth (normal along X) so the bank keeps volume seen from the side.
+// All sheets are STATIC -- a per-sheet uFacing uniform cross-fades between
+// the two orientations depending on the view angle (see animate loop).
 const edgeFogGeo = new THREE.PlaneGeometry(44, 10);
-edgeFogGeo.rotateX(Math.PI / 2);   // stand it up: quad in world XZ, facing along Y
-
+edgeFogGeo.rotateX(Math.PI / 2);
+const edgeFogCrossGeo = new THREE.PlaneGeometry(12, 10);
+edgeFogCrossGeo.rotateX(Math.PI / 2);
+edgeFogCrossGeo.rotateZ(Math.PI / 2);
+// Horizontal sheets (normal along Z) cover steep top-down view angles,
+// where every vertical sheet goes edge-on at once.
+const edgeFogFlatGeo = new THREE.PlaneGeometry(44, 12);
 const edgeFogGroup = new THREE.Group();
-const edgeFogMats  = [];
-for (const { y, a } of EDGE_FOG_LAYERS) {
-    // One material per sheet (identical GLSL -> three.js compiles a single
-    // program) so each carries its own base opacity without per-draw juggling.
+const edgeFogMats = [];
+const _fogCamDir = new THREE.Vector3();
+function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
     const mat = new THREE.ShaderMaterial({
         uniforms: {
-            uTime:  { value: 0 },
-            uAlpha: { value: a },
-            uMul:   { value: 1 },
-            uColor: { value: EDGE_FOG_COLOR },
+            uTime: {
+                value: 0,
+            },
+            uAlpha: {
+                value: a,
+            },
+            uMul: {
+                value: 1,
+            },
+            uFacing: {
+                value: 1,
+            },
+            uCross: {
+                value: cross,
+            },
+            uColor: {
+                value: EDGE_FOG_COLOR,
+            },
         },
-        vertexShader:   edgeFogVert,
+        vertexShader: edgeFogVert,
         fragmentShader: edgeFogFrag,
         transparent: true,
-        depthWrite:  false,
-        side:        THREE.DoubleSide,
+        depthWrite: false,
+        side: THREE.DoubleSide,
     });
-    const sheet = new THREE.Mesh(edgeFogGeo, mat);
-    sheet.position.set(0, y, 2.0);   // spans z -3..7: waterline up over the mouth arch
+    const sheet = new THREE.Mesh(geo, mat);
+    sheet.position.set(x, y, z);
+    sheet.userData.nx = nx;
+    sheet.userData.ny = ny;
+    sheet.userData.nz = nz;
     edgeFogGroup.add(sheet);
     edgeFogMats.push(mat);
 }
+for (const { y, a } of EDGE_FOG_LAYERS) addFogSheet(edgeFogGeo, 0, y, 2.0, a, 0, 1, 0, 0);
+// Cross sheets span the bank's depth (y ~7..19). Their per-fragment y-ramp
+// (uCross path in the shader) keeps them thin at the front edge, so the fog
+// never creeps forward into the scene.
+for (const x of [-16, -8, 0, 8, 16]) addFogSheet(edgeFogCrossGeo, x, 13.0, 2.0, 0.6, 1, 0, 0, 1);
+// Horizontal stack for top-down angles; same y-ramp keeps them at the edge.
+for (const z of [-0.4, 1.2, 2.8, 4.4]) addFogSheet(edgeFogFlatGeo, 0, 13.0, z, 0.55, 0, 0, 1, 1);
 scene.add(edgeFogGroup);
 
-// ---------------- BAT SWARM ----------------
-// Every bat is its own skinned-mesh clone (one draw call + one skeleton
-// update each, per render pass), so the count is the single biggest perf
-// lever. Fewer-but-bigger bats read as the same swarm for a fraction of
-// the cost.
-const BAT_COUNT    = 350;
+// ==================== BATS (COLONY) ====================
+const BAT_COUNT = 350;
 const BAT_WINGSPAN = 0.32;
-const FLAP_AXIS = new THREE.Vector3(1, 0, 0);     
-const _flapQ = new THREE.Quaternion();           
-
-
-// Z kept close to the water surface (WATER_BASE_Z ~= -1.0) rather than up
-// near the cave ceiling -- much easier to actually see them, especially
-// once they take flight.
+const FLAP_AXIS = new THREE.Vector3(1, 0, 0);
+const _flapQ = new THREE.Quaternion();
 const ROOST_MIN = new THREE.Vector3(-2.5, -11.0, -0.85);
-const ROOST_MAX = new THREE.Vector3( 2.5,  -8.0,  0.35);
+const ROOST_MAX = new THREE.Vector3(2.5, -8.0, 0.35);
 const ROOST_CENTER = new THREE.Vector3().addVectors(ROOST_MIN, ROOST_MAX).multiplyScalar(0.5);
-const EXIT_Y       = 4.0;    // the entrance cut plane -- "past the mouth" threshold
-const BAT_GONE_Y   = 17.0;   // deep inside the edge-of-map fog bank -- despawn fleeing
-                             // bats here, NOT at the cut plane, so they visibly fly off
-                             // and melt into the fog instead of popping out of existence
-const FLEE_RADIUS  = 4.0;
-const FLEE_SPEED   = 7.0;
-const STEER_FORCE  = 3.0;
+const EXIT_Y = 4.0;
+const BAT_GONE_Y = 17.0;
+const FLEE_RADIUS = 4.0;
+const FLEE_SPEED = 7.0;
+const STEER_FORCE = 3.0;
 const RETURN_FORCE = 0.7;
 const WANDER_FORCE = 0.7;
-const MAX_SPEED    = 9.0;
-
-// Colony "flying back in" after the scare: bats reappear out past the cave
-// mouth and fly in to their (new) roost spot, instead of just popping back
-// into place.
-const RETURN_SPEED       = 6.0;    // cruise speed while flying back to the roost
-const RETURN_ARRIVE_DIST = 0.4;    // close enough to home to call it "landed"
-
-// ---------------- CAPTAIN "BAT SCARE" ENCOUNTER ----------------
-// When the boat gets close enough to the roost, the whole colony erupts at
-// once (instead of the organic per-bat FLEE_RADIUS trickle) and streams
-// past the boat/captain. The captain freezes -- boat stops, oars stop --
-// until every bat has cleared the scene, then rows hard forward along the
-// same path he'd normally take out (the river loop already turns back
-// toward the entrance on its own -- we just speed through it). Once he's
-// out, the colony resettles after a delay, and he rows back in after a
-// second delay.
-const ENCOUNTER_TRIGGER_DIST = 2.6;   // distance to roost center that triggers the scare -- kept
-                                       // tight so it only fires once the boat is nearly at the
-                                       // apex of the path, right by the roost, not partway there
-const ENCOUNTER_REARM_DIST   = 8.0;   // must retreat this far before it can trigger again
-const FREEZE_TIMEOUT         = 8.0;   // safety valve so a stuck bat can't soft-lock the boat
-const RETURN_TIMEOUT         = 10.0;  // safety valve so a stuck bat can't stall the return flight
-
-// 'cruising'        -- normal loop, rowing at normal speed
-// 'frozen'          -- boat + oars stopped, colony erupting
-// 'panicking'       -- rowing hard along the path until back at the entrance
-// 'batsAwayWait'    -- waiting outside; colony is about to fly back in
-// 'batsReturning'   -- colony is flying in from outside the cave to the roost
-// 'captainAwayWait' -- colony has landed; waiting before rowing back in
+const MAX_SPEED = 9.0;
+const RETURN_SPEED = 6.0;
+const RETURN_ARRIVE_DIST = 0.4;
+const ENCOUNTER_TRIGGER_DIST = 2.6;
+const ENCOUNTER_REARM_DIST = 8.0;
+const FREEZE_TIMEOUT = 8.0;
+const RETURN_TIMEOUT = 10.0;
 let boatEncounterState = 'cruising';
-let encounterArmed     = true;
-let frozenElapsed      = 0;
-let waitElapsed        = 0;           // used by both *AwayWait states
-let rowTimeSec         = 0;           // drives oar/arm animation only; paused while frozen/waiting
-
-
-const _batAcc  = new THREE.Vector3();
-const _batTmp  = new THREE.Vector3();
+let encounterArmed = true;
+let frozenElapsed = 0;
+let waitElapsed = 0;
+let rowTimeSec = 0;
+const _batAcc = new THREE.Vector3();
+const _batTmp = new THREE.Vector3();
 const _batTmp2 = new THREE.Vector3();
-
-// LOD for the roost: a roosting (not fleeing) bat far from the camera is
-// nearly invisible, so its flocking forces / integration / bone flap only
-// need to run occasionally rather than every frame. Fleeing bats (which
-// fly toward the observer) always run at full rate.
-const LOD_DIST      = 12;
-const LOD_DIST_SQ   = LOD_DIST * LOD_DIST;
+const LOD_DIST = 12;
+const LOD_DIST_SQ = LOD_DIST * LOD_DIST;
 const LOD_SKIP_FRAMES = 4;
 let _batFrameCounter = 0;
-
-
 function respawnRoost(bat) {
     bat.home.set(
         THREE.MathUtils.lerp(ROOST_MIN.x, ROOST_MAX.x, Math.random()),
         THREE.MathUtils.lerp(ROOST_MIN.y, ROOST_MAX.y, Math.random()),
-        THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random())
+        THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random()),
     );
     bat.root.position.copy(bat.home);
-    bat.root.visible = true;   // a bat that had fled and gone invisible needs to reappear
-    bat.vel.set((Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5, (Math.random() - 0.5) * 0.5);
+    bat.root.visible = true;
+    bat.vel.set(
+        (Math.random() - 0.5) * 0.5,
+        (Math.random() - 0.5) * 0.5,
+        (Math.random() - 0.5) * 0.5,
+    );
     bat.spread = (Math.random() - 0.5) * 1.3;
     bat.state = 'roost';
     bat.fleeing = 0;
 }
-
-
-// Sends a resettled bat flying back in from just outside the cave mouth to
-// a freshly-picked spot in the roost, instead of teleporting it there.
 function startBatReturn(bat) {
     bat.home.set(
         THREE.MathUtils.lerp(ROOST_MIN.x, ROOST_MAX.x, Math.random()),
         THREE.MathUtils.lerp(ROOST_MIN.y, ROOST_MAX.y, Math.random()),
-        THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random())
+        THREE.MathUtils.lerp(ROOST_MIN.z, ROOST_MAX.z, Math.random()),
     );
     bat.root.position.set(
-        // spawn band aligned with the cave opening (x ~ -0.6..1.8) so they
-        // fly IN through the mouth instead of clipping the walls beside it,
-        // and BEYOND the dense part of the edge fog bank so they emerge out
-        // of the fog instead of popping into view midair
         0.3 + (Math.random() - 0.5) * 1.6,
         BAT_GONE_Y + 0.5 + Math.random() * 2.0,
-        THREE.MathUtils.lerp(0.2, 1.3, Math.random())
+        THREE.MathUtils.lerp(0.2, 1.3, Math.random()),
     );
     bat.root.visible = true;
-    // Give it an initial shove back into the cave (-Y) so it doesn't start
-    // the flight from a dead stop.
     bat.vel.set((Math.random() - 0.5) * 0.6, -RETURN_SPEED * 0.5, (Math.random() - 0.5) * 0.3);
     bat.spread = (Math.random() - 0.5) * 1.3;
     bat.state = 'return';
-    bat.fleeing = 1;   // reuse the flee wingbeat (full flap) while actively flying in
+    bat.fleeing = 1;
 }
-
-
 function findBone(root, targetName) {
     const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const t = norm(targetName);
     let found = null;
-    root.traverse((o) => { if (!found && norm(o.name) === t) found = o; });
+    root.traverse((o) => {
+        if (!found && norm(o.name) === t) found = o;
+    });
     return found;
 }
-
-const bats = [];   // populated once the model loads
-
-// All bat roots live under one group so the whole swarm can be hidden in a
-// single toggle during the water-refraction depth pre-pass (bats are tiny
-// and airborne -- they contribute nothing visible to the water's depth
-// buffer, but skinning them twice per frame was half their render cost).
+const bats = [];
 const batsGroup = new THREE.Group();
 scene.add(batsGroup);
-
 const gltfLoader = new GLTFLoader();
 gltfLoader.load(
     './models/bat_lowpoly.glb',
     (gltf) => {
         const source = gltf.scene;
-
         source.rotation.y = -Math.PI / 2;
-
         source.updateMatrixWorld(true);
         let box = new THREE.Box3().setFromObject(source);
-        const span = box.getSize(new THREE.Vector3()).x || 1;   // wingspan after yaw
+        const span = box.getSize(new THREE.Vector3()).x || 1;
         source.scale.setScalar(BAT_WINGSPAN / span);
         source.updateMatrixWorld(true);
         box = new THREE.Box3().setFromObject(source);
         source.position.sub(box.getCenter(new THREE.Vector3()));
-
         source.traverse((child) => {
             if (!child.isMesh) return;
-            // Bats are tiny and there are hundreds of them; letting each one
-            // cast shadows into 7 point-light cubemaps was the single
-            // biggest cost of the swarm. They still receive light/shadow
-            // from the cave so they don't look flat.
             child.castShadow = false;
             child.receiveShadow = true;
             if (child.material) {
-                child.material.side = THREE.DoubleSide;   // thin wing membranes
+                child.material.side = THREE.DoubleSide;
                 child.material.shadowSide = THREE.FrontSide;
             }
         });
-
         for (let i = 0; i < BAT_COUNT; i++) {
-            const root  = new THREE.Group();
-            const model = cloneSkeleton(source);    // deep clone incl. skeleton
+            const root = new THREE.Group();
+            const model = cloneSkeleton(source);
             root.add(model);
-
             batsGroup.add(root);
-
             const bones = {
-                armL:  findBone(model, 'arm1.L_Armature'),
-                armR:  findBone(model, 'arm1.R_Armature'),
+                armL: findBone(model, 'arm1.L_Armature'),
+                armR: findBone(model, 'arm1.R_Armature'),
                 wingL: findBone(model, 'wing1.L_Armature'),
                 wingR: findBone(model, 'wing1.R_Armature'),
             };
             const rest = new Map();
             for (const b of Object.values(bones)) if (b) rest.set(b, b.quaternion.clone());
-
             const bat = {
-                root, bones, rest,
-                home:    new THREE.Vector3(),
-                vel:     new THREE.Vector3(),
-                phase:   Math.random() * Math.PI * 2,   // desync the flapping
-                flapMul: 0.8 + Math.random() * 0.8,     // vary flap speed per bat
-                spread:  0,
-                state:   'roost',
-                fleeing: 0,                             // 0..1, decays each frame
+                root,
+                bones,
+                rest,
+                home: new THREE.Vector3(),
+                vel: new THREE.Vector3(),
+                phase: Math.random() * Math.PI * 2,
+                flapMul: 0.8 + Math.random() * 0.8,
+                spread: 0,
+                state: 'roost',
+                fleeing: 0,
             };
             respawnRoost(bat);
             bats.push(bat);
         }
-        console.log(`Bat colony loaded: ${bats.length} bats.`);
     },
     undefined,
-    (err) => console.error('Error loading bat.glb:', err)
+    (err) => console.error('Error loading bat.glb:', err),
 );
-
-// drive one bat's wing bones from inner/outer flap angles
 function flapBat(bat, innerAngle, outerAngle) {
     if (!bat.bones.armL) return;
     const apply = (bone, angle) => {
@@ -1963,90 +1976,59 @@ function flapBat(bat, innerAngle, outerAngle) {
         _flapQ.setFromAxisAngle(FLAP_AXIS, angle);
         bone.quaternion.copy(rest).multiply(_flapQ);
     };
-    apply(bat.bones.armL,  innerAngle);
-    apply(bat.bones.armR,  innerAngle);
+    apply(bat.bones.armL, innerAngle);
+    apply(bat.bones.armR, innerAngle);
     apply(bat.bones.wingL, outerAngle);
     apply(bat.bones.wingR, outerAngle);
 }
-
-
 function updateBats(timeSec, dt, boatPos) {
     _batFrameCounter++;
     for (let i = 0; i < bats.length; i++) {
         const bat = bats[i];
-        if (bat.state === 'gone') continue;   // already left the scene, never returns
-
+        if (bat.state === 'gone') continue;
         const p = bat.root.position;
-
-        // how close is the boat to this bat? Check this up front (cheap)
-        // so a bat can still be startled into flight promptly even while
-        // it's running on the reduced LOD update rate below.
         _batTmp.copy(p).sub(boatPos);
         const dBoat = _batTmp.length();
         if (bat.state === 'roost' && dBoat < FLEE_RADIUS) bat.state = 'flee';
-
-        // LOD: a roosting bat far from the camera is barely visible, so
-        // skip its forces/integration/bone-flap update most frames. The
-        // per-bat index staggers which frame each one updates on, so the
-        // cost is spread out instead of every bat updating on the same tick.
         if (bat.state === 'roost') {
             const dCamSq = p.distanceToSquared(camera.position);
             if (dCamSq > LOD_DIST_SQ && (_batFrameCounter + i) % LOD_SKIP_FRAMES !== 0) {
                 continue;
             }
         }
-
         _batAcc.set(0, 0, 0);
-
         if (bat.state === 'roost') {
-            // mill around the roost anchor
             _batTmp2.copy(bat.home).sub(p).multiplyScalar(RETURN_FORCE);
             _batAcc.add(_batTmp2);
             _batAcc.x += (Math.random() - 0.5) * WANDER_FORCE;
             _batAcc.y += (Math.random() - 0.5) * WANDER_FORCE;
             _batAcc.z += (Math.random() - 0.5) * WANDER_FORCE;
-
-            // coherent gentle hover bob so an idle bat still breathes
             _batAcc.z += Math.sin(timeSec * 1.5 + bat.phase) * 0.6;
         }
-
         if (bat.state === 'flee') {
             bat.fleeing = 1;
-
             if (p.y < 3.5) {
-                // Inside the cave: steer toward a per-bat slot in the CAVE
-                // OPENING rather than a fixed +Y fan -- the old fan sent the
-                // outer bats straight into the rock walls near the mouth.
-                // The opening at bat height is roughly x -0.6..1.8, so slots
-                // at 0.3 +/- spread*0.9 keep the whole stream inside it.
-                // z 0.5 keeps them ABOVE the wave crests (water base -1 with
-                // amplitude 1.0 -> crests reach z ~0) but under the arch.
                 _batTmp2.set(0.3 + bat.spread * 0.9, EXIT_Y + 0.5, 0.5).sub(p);
                 _batTmp2.normalize().multiplyScalar(FLEE_SPEED);
             } else {
-                // Clear of the mouth: no more walls, fan outward and keep
-                // flying away until fully outside the scene.
                 _batTmp2.set(bat.spread, 1.0, 0.1).normalize().multiplyScalar(FLEE_SPEED);
             }
             _batTmp2.sub(bat.vel).multiplyScalar(STEER_FORCE);
             _batAcc.add(_batTmp2);
-
-            // initial shove directly away from the boat for a snappier scatter
             if (dBoat < FLEE_RADIUS && dBoat > 1e-4) {
-                _batTmp.multiplyScalar((FLEE_RADIUS - dBoat) / dBoat * 6.0);
+                _batTmp.multiplyScalar(((FLEE_RADIUS - dBoat) / dBoat) * 6.0);
                 _batAcc.add(_batTmp);
             }
-
-            // fully outside the scene -> gone for good, hide and stop
-            if (p.y > BAT_GONE_Y) { bat.state = 'gone'; bat.root.visible = false; continue; }
+            if (p.y > BAT_GONE_Y) {
+                bat.state = 'gone';
+                bat.root.visible = false;
+                continue;
+            }
         } else if (bat.state === 'return') {
             bat.fleeing = 1;
-
-            // steer straight toward the freshly-picked roost spot
             _batTmp2.copy(bat.home).sub(p);
             const distHome = _batTmp2.length();
             if (distHome < RETURN_ARRIVE_DIST) {
-                // arrived -- settle into a normal roosting bat
                 bat.state = 'roost';
                 bat.fleeing = 0;
                 bat.vel.multiplyScalar(0.3);
@@ -2058,77 +2040,56 @@ function updateBats(timeSec, dt, boatPos) {
         } else {
             bat.fleeing *= 0.94;
         }
-
-        // integrate velocity with damping + speed cap
         bat.vel.addScaledVector(_batAcc, dt);
         bat.vel.multiplyScalar(0.97);
         const sp = bat.vel.length();
         if (sp > MAX_SPEED) bat.vel.multiplyScalar(MAX_SPEED / sp);
         p.addScaledVector(bat.vel, dt);
-
-        // confine roosting bats to the cave-end box; fleeing bats only stay above water
         if (bat.state === 'roost') {
             p.x = THREE.MathUtils.clamp(p.x, ROOST_MIN.x, ROOST_MAX.x);
             p.y = THREE.MathUtils.clamp(p.y, ROOST_MIN.y, ROOST_MAX.y);
             p.z = THREE.MathUtils.clamp(p.z, ROOST_MIN.z, ROOST_MAX.z);
         } else {
-            // Flying bats stay low over the water rather than climbing
-            // toward the ceiling. Fleeing bats never dip below the wave
-            // crests (z ~0 with amplitude 1.0); returning bats may descend
-            // further so they can land on the lower roost spots.
             p.z = THREE.MathUtils.clamp(p.z, bat.state === 'flee' ? 0.05 : -0.85, 1.3);
         }
-
-        // face direction of travel
         if (bat.vel.lengthSq() > 1e-4) {
             _batTmp.copy(p).add(bat.vel);
             bat.root.lookAt(_batTmp);
         }
-
-        // wing motion: full flap while actively flying (fleeing or
-        // returning), slow shallow idle while roosting
         let inner, outer;
         if (bat.state === 'flee' || bat.state === 'return') {
             const fs = params.flapSpeed * bat.flapMul * (1 + bat.fleeing * 1.6);
-            inner = Math.sin(timeSec * fs + bat.phase)       * 0.5;
+            inner = Math.sin(timeSec * fs + bat.phase) * 0.5;
             outer = Math.sin(timeSec * fs + bat.phase - 1.2) * 0.7;
         } else {
-            // idle: slow, small wing settle (slight fold) so a perched bat reads as alive
             const idle = timeSec * 1.8 * bat.flapMul + bat.phase;
-            inner = 0.10 + Math.sin(idle)        * 0.06;
-            outer = 0.16 + Math.sin(idle - 0.5)  * 0.10;
+            inner = 0.1 + Math.sin(idle) * 0.06;
+            outer = 0.16 + Math.sin(idle - 0.5) * 0.1;
         }
         flapBat(bat, inner, outer);
     }
 }
 
+// ==================== GUI CONTROLS ====================
 const params = {
-    boatSpeed: 0.035,       // cruising pace (world speed also depends on BOAT_SPEED_SCALE)
+    boatSpeed: 0.035,
     oarSpeed: 2.5,
     oarAmplitude: 0.4,
-    oarLift: 0.36,          // comparable to the sweep -> the stroke traces a circle, not a flat line
-    oarGrip: 0.5,           // how far along the oar handle the captain's hands grip (IK target)
-    armReach: 1,            // fraction of full arm length he reaches -> <1 keeps elbows bent
-    elbowAngle: -138.6,     // degrees: rolls the elbows around the arm (front <-> down <-> back)
-    gripRoll: 144.72,       // degrees: rolls both palms toward the oar handle (tune for the grip)
-    seatHeight: 0.12,       // captain hip height in boat-local +Y (raise so he sits on, not through, the hull)
+    oarLift: 0.36,
+    oarGrip: 0.5,
+    armReach: 1,
+    elbowAngle: -138.6,
+    gripRoll: 144.72,
+    seatHeight: 0.12,
     flapSpeed: 15.0,
     torchIntensity: 20.0,
-    panicBoatMult: 4.3,       // how much faster than boatSpeed while fleeing -- raised when
-                              // boatSpeed dropped 0.05 -> 0.035 so the ABSOLUTE flee speed
-                              // stays the same as before (0.05 * 3.0 ~= 0.035 * 4.3)
-    panicOarMult: 2.0,        // how much faster the oars/arms animate while fleeing
-    batsReturnDelay: 2.0,     // seconds after the captain exits before the colony reappears
-    captainReturnDelay: 1.5,  // seconds after the colony reappears before the captain rows back in
-    // Wall torch model orientation -- VERIFIED by headless render: the GLB
-    // is authored Y-up (handle down -Y, fire cage up +Y, wall plate facing
-    // +Z), so RotX 90 stands it upright in this Z-up scene: cage on top,
-    // handle hanging down. Sliders remain for per-taste tweaks only.
+    panicBoatMult: 4.3,
+    panicOarMult: 2.0,
+    batsReturnDelay: 2.0,
+    captainReturnDelay: 1.5,
     torchModelRotX: 90,
     torchModelRotZ: 0,
     torchModelScale: 1.0,
-    // Procedural flame -- offsets place the fire on the firewood, scale sizes
-    // it, flicker sets how hard the brightness/size dance (0 = steady glow).
     flameEnabled: true,
     flameScale: 0.4,
     flameOffX: -0.008,
@@ -2136,16 +2097,14 @@ const params = {
     flameOffZ: 0.14,
     flameFlicker: 0.4,
     waveAmplitude: 1.0,
-    waterReflectivity: 0.9,   // fresnel sheen strength
-    waterOpacity: 0.62,       // lower = clearer / more fluid, higher = denser
-    waterSparkle: 0.8,        // fine ripple normal strength (glitter)
-    waterGlint: 1.0,          // specular highlight brightness
-    waterFlowSpeed: 0.35,     // how fast the fine surface shimmer drifts
-    waterWakeStrength: 1.0,   // size of the boat's wake / displacement
-    edgeFogDensity: 1.0       // edge-of-map fog bank thickness (0 = off; also scales the
-                              // camera-inside-the-bank global fog boost)
+    waterReflectivity: 0.9,
+    waterOpacity: 0.62,
+    waterSparkle: 0.8,
+    waterGlint: 1.0,
+    waterFlowSpeed: 0.35,
+    waterWakeStrength: 1.0,
+    edgeFogDensity: 1.0,
 };
-
 const gui = new GUI();
 gui.add(params, 'boatSpeed', 0, 0.2).name('Boat Speed');
 gui.add(params, 'oarSpeed', 0, 8).name('Oar Speed');
@@ -2162,9 +2121,15 @@ gui.add(params, 'panicBoatMult', 1, 8).name('Panic Row Speed');
 gui.add(params, 'panicOarMult', 1, 6).name('Panic Oar Speed');
 gui.add(params, 'batsReturnDelay', 0, 15).name('Bats Return Delay (s)');
 gui.add(params, 'captainReturnDelay', 0, 15).name('Captain Return Delay (s)');
-gui.add(params, 'torchModelRotX', 0, 360).name('Torch Model Tilt').onChange(updateTorchModelTransform);
-gui.add(params, 'torchModelRotZ', 0, 360).name('Torch Model Yaw').onChange(updateTorchModelTransform);
-gui.add(params, 'torchModelScale', 0.2, 3).name('Torch Model Scale').onChange(updateTorchModelTransform);
+gui.add(params, 'torchModelRotX', 0, 360)
+    .name('Torch Model Tilt')
+    .onChange(updateTorchModelTransform);
+gui.add(params, 'torchModelRotZ', 0, 360)
+    .name('Torch Model Yaw')
+    .onChange(updateTorchModelTransform);
+gui.add(params, 'torchModelScale', 0.2, 3)
+    .name('Torch Model Scale')
+    .onChange(updateTorchModelTransform);
 gui.add(params, 'flameEnabled').name('Flame On');
 gui.add(params, 'flameScale', 0.1, 2).name('Flame Size');
 gui.add(params, 'flameOffX', -1, 1).name('Flame Offset X');
@@ -2180,66 +2145,77 @@ gui.add(params, 'waterFlowSpeed', 0, 1.5).name('Water Flow Speed');
 gui.add(params, 'waterWakeStrength', 0, 3).name('Boat Wake');
 gui.add(params, 'edgeFogDensity', 0, 2).name('Edge Fog');
 
+const moonFolder = gui.addFolder('Moon');
+moonFolder.add(moonParams, 'azimuth', -60, 60).name('Azimuth').onChange(placeMoon);
+moonFolder.add(moonParams, 'elevation', 5, 80).name('Elevation').onChange(placeMoon);
+moonFolder.add(moonParams, 'distance', 40, 160).name('Distance').onChange(placeMoon);
+moonFolder
+    .add(moonParams, 'glow', 0, 2)
+    .name('Glow')
+    .onChange((v) => (moonMat.emissiveIntensity = v));
+moonFolder
+    .add(moonParams, 'light', 0, 1.5)
+    .name('Moonlight')
+    .onChange((v) => (moonLight.intensity = v));
+moonFolder
+    .add(moonParams, 'halo', 0, 1.5)
+    .name('Halo')
+    .onChange((v) => (moonHaloMat.opacity = v));
+moonFolder
+    .add(moonParams, 'reflection', 0, 1)
+    .name('Reflection')
+    .onChange((v) => (waterUniforms.uMoonGlade.value = v));
+
+// ==================== ANIMATION LOOP ====================
 function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
     const dt = Math.min(clock.getDelta(), 0.1);
-
     if (controls.isLocked) {
-
         inputDir.set(
-            (keys['KeyD']   ? 1 : 0) - (keys['KeyA']   ? 1 : 0),
-            (keys['Space']  ? 1 : 0) - (keys['ShiftLeft'] || keys['ShiftRight'] ? 1 : 0),
-            (keys['KeyW']   ? 1 : 0) - (keys['KeyS']   ? 1 : 0),
+            (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
+            (keys['Space'] ? 1 : 0) - (keys['ShiftLeft'] || keys['ShiftRight'] ? 1 : 0),
+            (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0),
         );
         if (inputDir.lengthSq() > 0) inputDir.normalize();
-
-        const boost = (keys['ControlLeft'] || keys['ControlRight']) ? BOOST_MULT : 1;
+        const boost = keys['ControlLeft'] || keys['ControlRight'] ? BOOST_MULT : 1;
         const speed = BASE_SPEED * boost * speedScale;
         targetVel.copy(inputDir).multiplyScalar(speed);
-
         const a = 1 - Math.exp(-SMOOTHING * dt);
         velocity.lerp(targetVel, a);
-
-                controls.moveRight(velocity.x * dt);
+        controls.moveRight(velocity.x * dt);
         controls.moveForward(velocity.z * dt);
-        camera.position.z += velocity.y * dt;   // Space/Shift = vertical, now that up is +Z
+        camera.position.z += velocity.y * dt;
     } else {
         velocity.set(0, 0, 0);
     }
-
-
     updateHud(now);
-    maybeLogPosition();
-
-    // --- Cave bat scare state machine ---
-    // 1. Trigger: boat wanders within range of the roost -> whole colony flees at once.
-    if (boatEncounterState === 'cruising' && encounterArmed && bats.length > 0 &&
-        boatGroup.position.distanceTo(ROOST_CENTER) < ENCOUNTER_TRIGGER_DIST) {
+    if (
+        boatEncounterState === 'cruising' &&
+        encounterArmed &&
+        bats.length > 0 &&
+        boatGroup.position.distanceTo(ROOST_CENTER) < ENCOUNTER_TRIGGER_DIST
+    ) {
         boatEncounterState = 'frozen';
         encounterArmed = false;
         frozenElapsed = 0;
         for (const bat of bats) {
-            if (bat.state === 'roost') { bat.state = 'flee'; bat.fleeing = 1; }
+            if (bat.state === 'roost') {
+                bat.state = 'flee';
+                bat.fleeing = 1;
+            }
         }
     }
-
-    // 2. While frozen: wait for every bat to clear the scene (or time out).
     if (boatEncounterState === 'frozen') {
         frozenElapsed += dt;
-        const allClear = bats.length === 0 || bats.every(b => b.state === 'gone');
+        const allClear = bats.length === 0 || bats.every((b) => b.state === 'gone');
         if (allClear || frozenElapsed > FREEZE_TIMEOUT) {
             boatEncounterState = 'panicking';
         }
     }
-
-    // 3. Re-arm once the boat is safely away from the roost again.
     if (!encounterArmed && boatGroup.position.distanceTo(ROOST_CENTER) > ENCOUNTER_REARM_DIST) {
         encounterArmed = true;
     }
-
-    // 4. Once outside: wait, then the colony flies back in from outside the
-    // cave, then (once landed) the captain rows back in after a second wait.
     if (boatEncounterState === 'batsAwayWait') {
         waitElapsed += dt;
         if (waitElapsed >= params.batsReturnDelay) {
@@ -2249,9 +2225,8 @@ function animate() {
         }
     } else if (boatEncounterState === 'batsReturning') {
         waitElapsed += dt;
-        const allHome = bats.every(b => b.state === 'roost');
+        const allHome = bats.every((b) => b.state === 'roost');
         if (allHome || waitElapsed > RETURN_TIMEOUT) {
-            // safety valve: snap any straggler bats straight home
             if (!allHome) {
                 for (const bat of bats) if (bat.state !== 'roost') respawnRoost(bat);
             }
@@ -2264,32 +2239,24 @@ function animate() {
             boatEncounterState = 'cruising';
         }
     }
-
-    // 5. Drive the boat position and the oar/arm animation clock from the current phase.
-    // Back to the original single riverCurve for the whole journey -- the
-    // panic retreat just keeps rowing FORWARD along it (same direction as
-    // normal cruising, so the orientation/tangent stays correct) at a
-    // faster rate, following the same "to the back, then out" loop the
-    // path already traces, rather than a separate shortcut curve.
     let boatDir = 1;
     let oarRateMult = 1;
-    if (boatEncounterState === 'frozen' ||
+    if (
+        boatEncounterState === 'frozen' ||
         boatEncounterState === 'batsAwayWait' ||
         boatEncounterState === 'batsReturning' ||
-        boatEncounterState === 'captainAwayWait') {
+        boatEncounterState === 'captainAwayWait'
+    ) {
         boatDir = 0;
         oarRateMult = 0;
-        } else if (boatEncounterState === 'panicking') {
-        boatDir = -params.panicBoatMult;   // negative = row straight BACK OUT the way he came in
+    } else if (boatEncounterState === 'panicking') {
+        boatDir = -params.panicBoatMult;
         oarRateMult = params.panicOarMult;
     }
     rowTimeSec += dt * oarRateMult;
-
     if (boatDir !== 0) {
         boatProgress += dt * params.boatSpeed * BOAT_SPEED_SCALE * boatDir;
     }
-    // Panic rows BACKWARD, so progress falls. Reaching 0 means he's fled all
-    // the way back out the entrance, the way he came in.
     if (boatProgress <= 0.0) {
         boatProgress = 0.0;
         if (boatEncounterState === 'panicking') {
@@ -2297,86 +2264,83 @@ function animate() {
             waitElapsed = 0;
         }
     }
-    // Normal end-of-loop wrap while cruising forward.
     if (boatProgress >= 1.0) {
         boatProgress = 0.0;
     }
-
-        const currentPos = boatCurve.getPointAt(boatProgress);
+    const currentPos = boatCurve.getPointAt(boatProgress);
     const currentTangent = boatCurve.getTangentAt(boatProgress).normalize();
-
     boatGroup.position.copy(currentPos);
-
-    // Vanish once he's rowed out past the mouth into the dark; reappears
-    // when he rows back in (and stays hidden through the bat-scare wait,
-    // since he's parked out there at the far end of the path).
     boatGroup.visible = currentPos.y < BOAT_HIDE_Y;
     boatGroup.up.set(0, 0, 1);
-
-        // Face the way he's actually travelling: forward while cruising, but
-    // flip to face OUTWARD while panic-rowing back out of the cave.
     const faceSign = boatDir < 0 ? -1 : 1;
     const lookTarget = currentPos.clone().addScaledVector(currentTangent, faceSign);
     boatGroup.lookAt(lookTarget);
     const timeSec = now * 0.001;
-
-    updateFlames(timeSec);   // torch fire flicker (brightness + flame size only)
+    updateFlames(timeSec);
     fireflyUniforms.uTime.value = timeSec;
-
     for (const m of edgeFogMats) {
         m.uniforms.uTime.value = timeSec;
-        m.uniforms.uMul.value  = params.edgeFogDensity;
+        m.uniforms.uMul.value = params.edgeFogDensity;
     }
-
-   // --- REPLACE WITH THIS ---
-    // --- UNDERWATER CAMERA SENSOR ---
-    // Calculate the exact wave height at the camera's location
-    const camWaveHeight = waveHeight(camera.position.x, camera.position.y, timeSec, params.waveAmplitude);
-    const waterSurfaceZ = -1.0 + camWaveHeight; // -1.0 is the base height of your water
-
-    // Ramp continuously over the first 0.5 units of submersion instead of a hard
-    // cut, so the blur/tint and fog ease in together as the camera crosses the
-    // surface rather than popping the instant z dips below waterSurfaceZ.
+    // Cross-fade the two sheet orientations by view angle: a sheet seen
+    // edge-on fades out while the perpendicular set (seen face-on) fades in,
+    // so the bank keeps its volume from every direction without any sheet
+    // ever rotating.
+    for (const sheet of edgeFogGroup.children) {
+        _fogCamDir
+            .set(
+                camera.position.x - sheet.position.x,
+                camera.position.y - sheet.position.y,
+                camera.position.z - sheet.position.z,
+            )
+            .normalize();
+        const f = Math.abs(
+            _fogCamDir.x * sheet.userData.nx +
+                _fogCamDir.y * sheet.userData.ny +
+                _fogCamDir.z * sheet.userData.nz,
+        );
+        sheet.material.uniforms.uFacing.value = THREE.MathUtils.smoothstep(f, 0.05, 0.6);
+    }
+    const camWaveHeight = waveHeight(
+        camera.position.x,
+        camera.position.y,
+        timeSec,
+        params.waveAmplitude,
+    );
+    const waterSurfaceZ = -1.0 + camWaveHeight;
     const submersion = THREE.MathUtils.clamp((waterSurfaceZ - camera.position.z) / 0.05, 0, 1);
     setUnderwaterFactor(submersion);
-    // Edge-of-map fog: flying out INTO the bank also thickens the global
-    // scene fog, so from inside it the whole world fades away instead of the
-    // sheets alone carrying the effect. Ramps in past y 10 (the authored
-    // start view at y 11.5 only picks up a light haze) and is solid by ~16.
-    const edgeAmt = THREE.MathUtils.smoothstep(camera.position.y, 10.0, 16.0)
-                  * (1 - submersion) * Math.min(params.edgeFogDensity, 1);
-    scene.fog.color.setHex(0x05060a)
+    const edgeAmt =
+        THREE.MathUtils.smoothstep(camera.position.y, 10.0, 16.0) *
+        (1 - submersion) *
+        Math.min(params.edgeFogDensity, 1);
+    scene.fog.color
+        .setHex(0x05060a)
         .lerp(_underwaterFogColor, submersion)
         .lerp(EDGE_FOG_COLOR, edgeAmt);
     scene.fog.density = Math.max(
         THREE.MathUtils.lerp(0.022, 0.3, submersion),
-        THREE.MathUtils.lerp(0.022, 0.16, edgeAmt)
+        THREE.MathUtils.lerp(0.022, 0.16, edgeAmt),
     );
-    // --------------------------------
-
-    waterMaterial.uniforms.uTime.value         = timeSec;
-    waterMaterial.uniforms.uAmpScale.value     = params.waveAmplitude;
+    waterMaterial.uniforms.uTime.value = timeSec;
+    waterMaterial.uniforms.uAmpScale.value = params.waveAmplitude;
     waterMaterial.uniforms.uReflectivity.value = params.waterReflectivity;
-    waterMaterial.uniforms.uOpacity.value      = params.waterOpacity;
-    waterMaterial.uniforms.uSparkle.value      = params.waterSparkle;
+    waterMaterial.uniforms.uOpacity.value = params.waterOpacity;
+    waterMaterial.uniforms.uSparkle.value = params.waterSparkle;
     waterMaterial.uniforms.uSpecStrength.value = params.waterGlint;
-    waterMaterial.uniforms.uDetailSpeed.value  = params.waterFlowSpeed;
-
-    // Boat wake: drive from the hull's actual world speed and heading.
+    waterMaterial.uniforms.uDetailSpeed.value = params.waterFlowSpeed;
     let boatWorldSpeed = 0;
     if (_boatPrevValid) boatWorldSpeed = currentPos.distanceTo(_boatPrevPos) / Math.max(dt, 1e-3);
     _boatPrevPos.copy(currentPos);
     _boatPrevValid = true;
-
     const wakeAmt = THREE.MathUtils.clamp(boatWorldSpeed * 0.8, 0, 1.5) * params.waterWakeStrength;
     waterMaterial.uniforms.uBoatPos.value.set(currentPos.x, currentPos.y);
     const _tl = Math.hypot(currentTangent.x, currentTangent.y) || 1;
-       waterMaterial.uniforms.uBoatDir.value.set(
+    waterMaterial.uniforms.uBoatDir.value.set(
         (currentTangent.x / _tl) * faceSign,
-        (currentTangent.y / _tl) * faceSign
+        (currentTangent.y / _tl) * faceSign,
     );
     waterMaterial.uniforms.uBoatSpeed.value = wakeAmt;
-
     const _lp = waterMaterial.uniforms.uLightPos.value;
     const _lc = waterMaterial.uniforms.uLightColor.value;
     const _li = waterMaterial.uniforms.uLightIntensity.value;
@@ -2387,110 +2351,86 @@ function animate() {
         _li[i] = torches[i].intensity;
     }
     waterMaterial.uniforms.uLightCount.value = _ln;
-
     const amp = params.waveAmplitude;
-    const sp  = 0.25;
-    const hC     = waveHeight(currentPos.x,      currentPos.y,      timeSec, amp);
-    const hBow   = waveHeight(currentPos.x,      currentPos.y - sp, timeSec, amp);
-    const hStern = waveHeight(currentPos.x,      currentPos.y + sp, timeSec, amp);
-    const hPort  = waveHeight(currentPos.x - sp, currentPos.y,      timeSec, amp);
-    const hStar  = waveHeight(currentPos.x + sp, currentPos.y,      timeSec, amp);
-
+    const sp = 0.25;
+    const hC = waveHeight(currentPos.x, currentPos.y, timeSec, amp);
+    const hBow = waveHeight(currentPos.x, currentPos.y - sp, timeSec, amp);
+    const hStern = waveHeight(currentPos.x, currentPos.y + sp, timeSec, amp);
+    const hPort = waveHeight(currentPos.x - sp, currentPos.y, timeSec, amp);
+    const hStar = waveHeight(currentPos.x + sp, currentPos.y, timeSec, amp);
     boatGroup.position.z = currentPos.z + hC + BOAT_FLOAT;
-
     const pitch = Math.atan2(hBow - hStern, 2.0 * sp);
-    const roll  = Math.atan2(hPort - hStar, 2.0 * sp);
+    const roll = Math.atan2(hPort - hStar, 2.0 * sp);
     boatGroup.rotateX(pitch);
     boatGroup.rotateZ(roll);
-
-    // Uses rowTimeSec (not timeSec) so the rowing motion actually freezes
-    // while the captain is spooked, and speeds up while he's panic-rowing.
     const oarPhase = rowTimeSec * params.oarSpeed;
     const sweep = Math.sin(oarPhase) * params.oarAmplitude;
-    const lift  = Math.cos(oarPhase) * params.oarLift;
-
+    const lift = Math.cos(oarPhase) * params.oarLift;
     const rowOar = (oar, sweepSign, bladeSignX) => {
         const rest = oarRest.get(oar);
         if (!rest) return;
-
         oar.parent.getWorldQuaternion(_oarParentQ);
         _oarParentInv.copy(_oarParentQ).invert();
-
-
         _oarAxis.copy(WORLD_UP).applyQuaternion(_oarParentInv).normalize();
         _oarQ.setFromAxisAngle(_oarAxis, sweep * sweepSign);
-
-      
-        _oarOutboard.set(bladeSignX, 0, 0)  
-            .applyQuaternion(rest)           
-            .applyQuaternion(_oarParentQ);   
+        _oarOutboard.set(bladeSignX, 0, 0).applyQuaternion(rest).applyQuaternion(_oarParentQ);
         _oarOutboard.z = 0;
         if (_oarOutboard.lengthSq() > 1e-6) {
             _oarOutboard.normalize();
-            _oarLiftAxis.set(_oarOutboard.y, -_oarOutboard.x, 0)
-                .applyQuaternion(_oarParentInv).normalize();
+            _oarLiftAxis
+                .set(_oarOutboard.y, -_oarOutboard.x, 0)
+                .applyQuaternion(_oarParentInv)
+                .normalize();
             _oarLiftQ.setFromAxisAngle(_oarLiftAxis, lift);
         } else {
             _oarLiftQ.identity();
         }
-
-        // world orientation = parent * (lift * sweep * rest)
         oar.quaternion.copy(rest).premultiply(_oarQ).premultiply(_oarLiftQ);
     };
-    if (oars.L) rowOar(oars.L, OAR_L_SIGN, -1);   // left blade at local -X
-    if (oars.R) rowOar(oars.R, OAR_R_SIGN, +1);   // right blade at local +X
-
-    // Spawn a ripple whenever a blade tip dips below the water surface.
+    if (oars.L) rowOar(oars.L, OAR_L_SIGN, -1);
+    if (oars.R) rowOar(oars.R, OAR_R_SIGN, +1);
     processOarRipple(oars.L, oarDip.L, timeSec, params.waveAmplitude);
     processOarRipple(oars.R, oarDip.R, timeSec, params.waveAmplitude);
     uploadRipples(timeSec);
-
     captGroup.position.y = params.seatHeight;
-
-
     if (captArmLen > 0 && (oars.L || oars.R)) {
         boatGroup.getWorldQuaternion(_ikBoatQ);
-        _ikUpW.set(0, 1, 0).applyQuaternion(_ikBoatQ);                 // boat-up: elbow reference + hand lift
+        _ikUpW.set(0, 1, 0).applyQuaternion(_ikBoatQ);
         _ikLift.copy(_ikUpW).multiplyScalar(CAPT_HAND_LIFT);
         const ea = THREE.MathUtils.degToRad(params.elbowAngle);
         if (captBones.armL && captBones.foreL && oars.L) {
-            solveArmIK(captBones.armL, captBones.foreL,
-                oarHandle(oars.L, +1, _ikHandle).add(_ikLift), captArmLen, captForeLen, _ikUpW, ea);
+            solveArmIK(
+                captBones.armL,
+                captBones.foreL,
+                oarHandle(oars.L, +1, _ikHandle).add(_ikLift),
+                captArmLen,
+                captForeLen,
+                _ikUpW,
+                ea,
+            );
             gripHand(captBones.handL, captBones.foreL, THREE.MathUtils.degToRad(params.gripRoll));
         }
         if (captBones.armR && captBones.foreR && oars.R) {
-            solveArmIK(captBones.armR, captBones.foreR,
-                oarHandle(oars.R, -1, _ikHandle).add(_ikLift), captArmLen, captForeLen, _ikUpW, -ea);
+            solveArmIK(
+                captBones.armR,
+                captBones.foreR,
+                oarHandle(oars.R, -1, _ikHandle).add(_ikLift),
+                captArmLen,
+                captForeLen,
+                _ikUpW,
+                -ea,
+            );
             gripHand(captBones.handR, captBones.foreR, THREE.MathUtils.degToRad(-params.gripRoll));
         }
     }
-
-    // --- Bat swarm: wander, flee the boat, and flap ---
     if (bats.length) updateBats(timeSec, dt, boatGroup.position);
-
-    // NOTE: the old per-frame torch position jitter + intensity flutter that
-    // used to live here (a leftover from when torches were just floating
-    // flame markers) is gone: the lights now carry the physical wall-torch
-    // model as a child, so moving the light shook the whole prop. Brightness
-    // flicker is handled by updateFlames(); positions never move.
-
-    // Only the torches nearest the camera actually cast shadows this frame
-    // (see updateActiveShadowTorches) -- keeps the point-light cubemap
-    // shadow cost bounded no matter how many shadow-eligible torches exist.
     updateActiveShadowTorches(camera.position);
-
-   // --- 1. HIDE WATER & CAP, RENDER DEPTH ---
-    // Recompute shadow maps once for this frame (autoUpdate is off above);
-    // the second render() below reuses them instead of redoing all 7
-    // point-light cubemap passes a second time.
     renderer.shadowMap.needsUpdate = true;
     water.visible = false;
-    batsGroup.visible = false;    // swarm skipped in the depth pre-pass (see batsGroup)
-    edgeFogGroup.visible = false; // fog writes no depth -- pure wasted fill in this pass
+    batsGroup.visible = false;
+    edgeFogGroup.visible = false;
     renderer.setRenderTarget(depthTarget);
     renderer.render(scene, camera);
-
-    // --- 2. SHOW WATER & CAP, RENDER TO SCREEN ---
     water.visible = true;
     batsGroup.visible = true;
     edgeFogGroup.visible = true;
@@ -2498,7 +2438,5 @@ function animate() {
     renderer.render(scene, camera);
     TWEEN.update();
     tickFps(now);
-
 }
-
 animate();
