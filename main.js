@@ -13,8 +13,8 @@ scene.background = new THREE.Color(0x05060a);
 scene.fog = new THREE.FogExp2(0x05060a, 0.022);
 const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.05, 1000);
 camera.up.set(0, 0, 1);
-camera.position.set(2.2, 11.5, 2.2);
-camera.lookAt(-0.2, 2.0, -0.6);
+camera.position.set(0.95, 4.97, 1.82);
+camera.lookAt(0.92, 5.91, 1.82);
 const renderer = new THREE.WebGLRenderer({
     antialias: true,
     stencil: true,
@@ -1761,8 +1761,6 @@ const edgeFogFrag = `
                    * (1.0 - smoothstep(top - 1.6, top, vWorldPos.z))
                    * (1.0 - smoothstep(16.0, 21.5, abs(vWorldPos.x)));
 
-        // Fade out right at the camera so flying through the bank never
-        // clips a hard sheet across the screen.
         float camFade = smoothstep(0.4, 2.6, distance(cameraPosition, vWorldPos));
 
         float alpha = uAlpha * uMul * uFacing * density * fade * camFade;
@@ -1774,17 +1772,13 @@ const edgeFogFrag = `
         // dense billows catch light on their tops, crevices fall into shadow
         gl_FragColor = vec4(uColor * (0.5 + density * 0.9 + relief * 0.85), alpha);
     }`;
-// Front sheets face the scene (normal along Y); cross sheets run along the
-// bank's depth (normal along X) so the bank keeps volume seen from the side.
-// All sheets are STATIC -- a per-sheet uFacing uniform cross-fades between
-// the two orientations depending on the view angle (see animate loop).
+
+
 const edgeFogGeo = new THREE.PlaneGeometry(44, 10);
 edgeFogGeo.rotateX(Math.PI / 2);
 const edgeFogCrossGeo = new THREE.PlaneGeometry(12, 10);
 edgeFogCrossGeo.rotateX(Math.PI / 2);
 edgeFogCrossGeo.rotateZ(Math.PI / 2);
-// Horizontal sheets (normal along Z) cover steep top-down view angles,
-// where every vertical sheet goes edge-on at once.
 const edgeFogFlatGeo = new THREE.PlaneGeometry(44, 12);
 const edgeFogGroup = new THREE.Group();
 const edgeFogMats = [];
@@ -1826,11 +1820,7 @@ function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
     edgeFogMats.push(mat);
 }
 for (const { y, a } of EDGE_FOG_LAYERS) addFogSheet(edgeFogGeo, 0, y, 2.0, a, 0, 1, 0, 0);
-// Cross sheets span the bank's depth (y ~7..19). Their per-fragment y-ramp
-// (uCross path in the shader) keeps them thin at the front edge, so the fog
-// never creeps forward into the scene.
 for (const x of [-16, -8, 0, 8, 16]) addFogSheet(edgeFogCrossGeo, x, 13.0, 2.0, 0.6, 1, 0, 0, 1);
-// Horizontal stack for top-down angles; same y-ramp keeps them at the edge.
 for (const z of [-0.4, 1.2, 2.8, 4.4]) addFogSheet(edgeFogFlatGeo, 0, 13.0, z, 0.55, 0, 0, 1, 1);
 scene.add(edgeFogGroup);
 
@@ -1854,7 +1844,7 @@ const RETURN_SPEED = 6.0;
 const RETURN_ARRIVE_DIST = 0.4;
 const ENCOUNTER_TRIGGER_DIST = 2.6;
 const ENCOUNTER_REARM_DIST = 8.0;
-const FREEZE_TIMEOUT = 8.0;
+const FREEZE_TIMEOUT = 4.0;
 const RETURN_TIMEOUT = 10.0;
 let boatEncounterState = 'cruising';
 let encounterArmed = true;
@@ -2282,10 +2272,7 @@ function animate() {
         m.uniforms.uTime.value = timeSec;
         m.uniforms.uMul.value = params.edgeFogDensity;
     }
-    // Cross-fade the two sheet orientations by view angle: a sheet seen
-    // edge-on fades out while the perpendicular set (seen face-on) fades in,
-    // so the bank keeps its volume from every direction without any sheet
-    // ever rotating.
+    
     for (const sheet of edgeFogGroup.children) {
         _fogCamDir
             .set(
