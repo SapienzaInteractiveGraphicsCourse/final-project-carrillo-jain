@@ -1707,7 +1707,7 @@ const edgeFogFrag = `
     uniform float uAlpha;
     uniform float uMul;
     uniform float uFacing; // view-angle cross-fade, set per frame in JS
-    uniform float uCross;  // 1 on sheets that run along the bank's depth
+        uniform float uMode;   // 0 = vertical wall sheet, 1 = horizontal ceiling (lid)
     uniform vec3  uColor;
     varying vec3  vWorldPos;
 
@@ -1753,25 +1753,36 @@ const edgeFogFrag = `
         float nUp    = efFbm(wp2 + vec2(0.06, 0.44) + d1);
         float relief = clamp((n1 - nUp) * 2.8, -0.45, 0.9);
 
-        // Soft edges: meets the water at the bottom, and instead of a flat
-        // top fade, the skyline is carved by the same noise so the bank
-        // reads as rolling cloud tops against the dark.
-        float top  = 3.2 + billow * 3.0;
-        float fade = smoothstep(-1.35, -0.45, vWorldPos.z)
-                   * (1.0 - smoothstep(top - 1.6, top, vWorldPos.z))
-                   * (1.0 - smoothstep(16.0, 21.5, abs(vWorldPos.x)));
+                // The bank now RINGS the whole diorama. Fade is driven by distance
+        // from the scene centre (a radial "keep-out"): thin over the interior,
+        // solid past the ring -- so whichever side a sheet is on, it stays
+        // pinned to the edge of the world instead of creeping inward.
+        const vec2  FOG_CENTER = vec2(0.0, -3.5);
+        const float FOG_INNER  = 10.0;   // interior stays clear within this radius
+        const float FOG_BAND   = 8.0;    // thickens to solid over this distance
+        float radial = length(vWorldPos.xy - FOG_CENTER);
+        float rpin   = smoothstep(FOG_INNER, FOG_INNER + FOG_BAND, radial);
+
+        // Walls meet the water at the bottom and dissolve into carved cloud
+        // tops; the lid (uMode = 1) is a horizontal ceiling high overhead.
+                float top   = 6.5 + billow * 4.0;
+        float vWall = smoothstep(-1.35, -0.45, vWorldPos.z)
+                    * (1.0 - smoothstep(top - 2.2, top, vWorldPos.z));
+        float vLid  = smoothstep(2.0, 4.5, vWorldPos.z);
+        float vfade = mix(vWall, vLid, uMode);
+
+        // Walls are pinned to the ring; the lid covers the whole footprint.
+        float rfade = mix(rpin, 1.0, uMode);
+        float fade  = vfade * rfade;
 
         float camFade = smoothstep(0.4, 2.6, distance(cameraPosition, vWorldPos));
 
         float alpha = uAlpha * uMul * uFacing * density * fade * camFade;
-        // Depth ramp for cross sheets: thin at the bank's front edge (~y 8),
-        // full further in -- mirrors the front layers' alpha ramp and keeps
-        // the fog pinned to the edge of the world.
-        alpha *= mix(1.0, smoothstep(8.0, 15.0, vWorldPos.y), uCross);
         if (alpha < 0.004) discard;
         // dense billows catch light on their tops, crevices fall into shadow
         gl_FragColor = vec4(uColor * (0.5 + density * 0.9 + relief * 0.85), alpha);
     }`;
+<<<<<<< HEAD
 
 
 const edgeFogGeo = new THREE.PlaneGeometry(44, 10);
@@ -1780,30 +1791,36 @@ const edgeFogCrossGeo = new THREE.PlaneGeometry(12, 10);
 edgeFogCrossGeo.rotateX(Math.PI / 2);
 edgeFogCrossGeo.rotateZ(Math.PI / 2);
 const edgeFogFlatGeo = new THREE.PlaneGeometry(44, 12);
+=======
+// The fog now RINGS the whole diorama: four vertical walls (front / back /
+// left / right) plus a horizontal ceiling. Every sheet is STATIC -- a
+// per-sheet uFacing uniform cross-fades a sheet out as it turns edge-on, and
+// the perpendicular walls of the box cover for it, so the bank keeps volume
+// from every direction without any sheet ever rotating.
+const FOG_MODE_WALL = 0;
+const FOG_MODE_LID = 1;
+// Wall spanning X (normal +Y) for the front/back walls...
+const fogWallXGeo = new THREE.PlaneGeometry(52, 18);
+fogWallXGeo.rotateX(Math.PI / 2);
+// ...wall spanning Y (normal +X) for the left/right walls...
+const fogWallYGeo = new THREE.PlaneGeometry(50, 18);
+fogWallYGeo.rotateX(Math.PI / 2);
+fogWallYGeo.rotateZ(Math.PI / 2);
+// ...and a flat lid (normal +Z) for the ceiling.
+const fogLidGeo = new THREE.PlaneGeometry(52, 50);
+>>>>>>> abd981df12b264fe48079f61297f96ed68f060d8
 const edgeFogGroup = new THREE.Group();
 const edgeFogMats = [];
 const _fogCamDir = new THREE.Vector3();
-function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
+function addFogSheet(geo, x, y, z, a, nx, ny, nz, mode) {
     const mat = new THREE.ShaderMaterial({
         uniforms: {
-            uTime: {
-                value: 0,
-            },
-            uAlpha: {
-                value: a,
-            },
-            uMul: {
-                value: 1,
-            },
-            uFacing: {
-                value: 1,
-            },
-            uCross: {
-                value: cross,
-            },
-            uColor: {
-                value: EDGE_FOG_COLOR,
-            },
+            uTime: { value: 0 },
+            uAlpha: { value: a },
+            uMul: { value: 1 },
+            uFacing: { value: 1 },
+            uMode: { value: mode },
+            uColor: { value: EDGE_FOG_COLOR },
         },
         vertexShader: edgeFogVert,
         fragmentShader: edgeFogFrag,
@@ -1819,9 +1836,35 @@ function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
     edgeFogGroup.add(sheet);
     edgeFogMats.push(mat);
 }
+<<<<<<< HEAD
 for (const { y, a } of EDGE_FOG_LAYERS) addFogSheet(edgeFogGeo, 0, y, 2.0, a, 0, 1, 0, 0);
 for (const x of [-16, -8, 0, 8, 16]) addFogSheet(edgeFogCrossGeo, x, 13.0, 2.0, 0.6, 1, 0, 0, 1);
 for (const z of [-0.4, 1.2, 2.8, 4.4]) addFogSheet(edgeFogFlatGeo, 0, 13.0, z, 0.55, 0, 0, 1, 1);
+=======
+// The diorama sits roughly within x=[-9,9], y=[-11,4]; the ring is centred at
+// (0, -3.5) to match FOG_CENTER in the shader. Each wall is a few layered
+// sheets stepping outward with rising alpha, so it reads as a deep bank
+// receding into the dark rather than a flat decal.
+const FOG_MID_Y = -3.5;
+const FOG_LAYERS = [
+    { d: 0.0, a: 0.35 },
+    { d: 2.4, a: 0.6 },
+    { d: 4.8, a: 0.85 },
+];
+for (const { d, a } of FOG_LAYERS) {
+    // Front wall (+Y, into the cave mouth) and back wall (-Y).
+    addFogSheet(fogWallXGeo, 0, 12.5 + d, 2.0, a, 0, 1, 0, FOG_MODE_WALL);
+    addFogSheet(fogWallXGeo, 0, -19.5 - d, 2.0, a, 0, 1, 0, FOG_MODE_WALL);
+    // Left wall (-X) and right wall (+X), spanning the box depth in Y.
+    addFogSheet(fogWallYGeo, -16.5 - d, FOG_MID_Y, 2.0, a, 1, 0, 0, FOG_MODE_WALL);
+    addFogSheet(fogWallYGeo, 16.5 + d, FOG_MID_Y, 2.0, a, 1, 0, 0, FOG_MODE_WALL);
+}
+// Ceiling: a stack of horizontal sheets high overhead so steep top-down views
+// see a misty lid instead of straight through to the void.
+for (const { z, a } of [{ z: 6.5, a: 0.4 }, { z: 8.0, a: 0.55 }, { z: 9.5, a: 0.6 }]) {
+    addFogSheet(fogLidGeo, 0, FOG_MID_Y, z, a, 0, 0, 1, FOG_MODE_LID);
+}
+>>>>>>> abd981df12b264fe48079f61297f96ed68f060d8
 scene.add(edgeFogGroup);
 
 // ==================== BATS (COLONY) ====================
@@ -2281,12 +2324,16 @@ function animate() {
                 camera.position.z - sheet.position.z,
             )
             .normalize();
-        const f = Math.abs(
+                const f = Math.abs(
             _fogCamDir.x * sheet.userData.nx +
                 _fogCamDir.y * sheet.userData.ny +
                 _fogCamDir.z * sheet.userData.nz,
         );
-        sheet.material.uniforms.uFacing.value = THREE.MathUtils.smoothstep(f, 0.05, 0.6);
+        // Keep a floor so perpendicular walls and the lid never fully vanish
+        // when seen edge-on. Without it, from a distance only the single wall
+        // facing the camera survives and the box looks open on the sides/top.
+        const facing = THREE.MathUtils.smoothstep(f, 0.05, 0.5);
+        sheet.material.uniforms.uFacing.value = 0.45 + 0.55 * facing;
     }
     const camWaveHeight = waveHeight(
         camera.position.x,
