@@ -1707,7 +1707,7 @@ const edgeFogFrag = `
     uniform float uAlpha;
     uniform float uMul;
     uniform float uFacing; // view-angle cross-fade, set per frame in JS
-        uniform float uMode;   // 0 = vertical wall sheet, 1 = horizontal ceiling (lid)
+    uniform float uCross;  // 1 on sheets that run along the bank's depth
     uniform vec3  uColor;
     varying vec3  vWorldPos;
 
@@ -1744,64 +1744,66 @@ const edgeFogFrag = `
         float n1 = efFbm(wp2 + d1);
         float n2 = efFbm(wp2 * 1.9 + d2 + 4.7);
         float billow  = n1 * 0.65 + n2 * 0.45;
-               float density = smoothstep(0.12, 0.78, billow);
-        density = mix(0.58, 1.0, density);   // thick bank: stays dense, never thins to a sheet
+        float density = smoothstep(0.20, 0.82, billow);
+        density = mix(0.42, 1.0, density);   // it's a bank, not puffs -- never open a full hole
+
         // Cheap self-shading: sample the same field a little higher up
         // (reusing the warp). Denser-than-above reads as a moonlit billow
         // top, thinner as a shaded crevice -- gives the bank 3D relief.
         float nUp    = efFbm(wp2 + vec2(0.06, 0.44) + d1);
         float relief = clamp((n1 - nUp) * 2.8, -0.45, 0.9);
 
-                        // Round "keep-out": fog is clear over the interior and thickens into a
-        // bank past the ring radius. The inner edge is wobbled by noise around
-        // the ring (cos/sin keep it seamless), so the bank rolls in and out
-        // like real fog instead of reading as a clean tube or a box.
-        const vec2  FOG_CENTER = vec2(0.0, -3.5);
-        const float FOG_INNER  = 9.0;    // interior stays clear within this radius
-        const float FOG_BAND   = 10.0;   // thickens to solid over this distance
-        vec2  rel    = vWorldPos.xy - FOG_CENTER;
-        float radial = length(rel);
-        vec2  dirv   = rel / max(radial, 1e-3);
-        float wob    = (efFbm(dirv * 2.6 + vec2(uTime * 0.03, 0.0)) - 0.5) * 7.0;
-        float rpin   = smoothstep(FOG_INNER + wob, FOG_INNER + FOG_BAND + wob, radial);
-
-        // Walls meet the water at the bottom and dissolve into big rolling
-        // cloud tops; the lid (uMode = 1) is a horizontal ceiling overhead.
-        float top   = 5.0 + billow * 6.0;
-        float vWall = smoothstep(-1.35, -0.45, vWorldPos.z)
-                    * (1.0 - smoothstep(top - 2.2, top, vWorldPos.z));
-        float vLid  = smoothstep(2.0, 4.5, vWorldPos.z);
-        float vfade = mix(vWall, vLid, uMode);
-
-        // Walls are pinned to the ring; the lid covers the whole footprint.
-        float rfade = mix(rpin, 1.0, uMode);
-        float fade  = vfade * rfade;
+        // Soft edges: meets the water at the bottom, and instead of a flat
+        // top fade, the skyline is carved by the same noise so the bank
+        // reads as rolling cloud tops against the dark.
+        float top  = 3.2 + billow * 3.0;
+        float fade = smoothstep(-1.35, -0.45, vWorldPos.z)
+                   * (1.0 - smoothstep(top - 1.6, top, vWorldPos.z))
+                   * (1.0 - smoothstep(16.0, 21.5, abs(vWorldPos.x)));
 
         float camFade = smoothstep(0.4, 2.6, distance(cameraPosition, vWorldPos));
 
         float alpha = uAlpha * uMul * uFacing * density * fade * camFade;
+        // Depth ramp for cross sheets: thin at the bank's front edge (~y 8),
+        // full further in -- mirrors the front layers' alpha ramp and keeps
+        // the fog pinned to the edge of the world.
+        alpha *= mix(1.0, smoothstep(8.0, 15.0, vWorldPos.y), uCross);
         if (alpha < 0.004) discard;
         // dense billows catch light on their tops, crevices fall into shadow
         gl_FragColor = vec4(uColor * (0.5 + density * 0.9 + relief * 0.85), alpha);
     }`;
-// The fog is a soft ROUND bank around the whole diorama: concentric cylinder
-// shells (no corners, so it never reads as a box) plus a few ceiling disks.
-// Stacking several shells at growing radius gives it real depth -- a thick,
-// rolling fog wall in the distance instead of a thin flat sheet up close.
-const FOG_MODE_WALL = 0;
-const FOG_MODE_LID = 1;
-const FOG_MID_Y = -3.5;                 // ring centre in Y (matches FOG_CENTER)
+
+
+const edgeFogGeo = new THREE.PlaneGeometry(44, 10);
+edgeFogGeo.rotateX(Math.PI / 2);
+const edgeFogCrossGeo = new THREE.PlaneGeometry(12, 10);
+edgeFogCrossGeo.rotateX(Math.PI / 2);
+edgeFogCrossGeo.rotateZ(Math.PI / 2);
+const edgeFogFlatGeo = new THREE.PlaneGeometry(44, 12);
 const edgeFogGroup = new THREE.Group();
 const edgeFogMats = [];
-function addFogMesh(geo, z, a, mode) {
+const _fogCamDir = new THREE.Vector3();
+function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
     const mat = new THREE.ShaderMaterial({
         uniforms: {
-            uTime: { value: 0 },
-            uAlpha: { value: a },
-            uMul: { value: 1 },
-            uFacing: { value: 1 },   // cylinders always face the viewer -> no cross-fade
-            uMode: { value: mode },
-            uColor: { value: EDGE_FOG_COLOR },
+            uTime: {
+                value: 0,
+            },
+            uAlpha: {
+                value: a,
+            },
+            uMul: {
+                value: 1,
+            },
+            uFacing: {
+                value: 1,
+            },
+            uCross: {
+                value: cross,
+            },
+            uColor: {
+                value: EDGE_FOG_COLOR,
+            },
         },
         vertexShader: edgeFogVert,
         fragmentShader: edgeFogFrag,
@@ -1809,29 +1811,17 @@ function addFogMesh(geo, z, a, mode) {
         depthWrite: false,
         side: THREE.DoubleSide,
     });
-    const mesh = new THREE.Mesh(geo, mat);
-    mesh.position.set(0, FOG_MID_Y, z);
-    edgeFogGroup.add(mesh);
+    const sheet = new THREE.Mesh(geo, mat);
+    sheet.position.set(x, y, z);
+    sheet.userData.nx = nx;
+    sheet.userData.ny = ny;
+    sheet.userData.nz = nz;
+    edgeFogGroup.add(sheet);
     edgeFogMats.push(mat);
 }
-// Vertical shells: open-ended cylinders at growing radius. Three's cylinder
-// runs along Y, so rotate it onto our Z-up axis. Each shell is a touch fainter
-// and further out; together they stack into a deep, billowing wall of fog.
-const FOG_SHELLS = [
-    { r: 18, a: 0.42 },
-    { r: 22, a: 0.55 },
-    { r: 26, a: 0.5 },
-];
-for (const { r, a } of FOG_SHELLS) {
-    const geo = new THREE.CylinderGeometry(r, r, 22, 64, 1, true);
-    geo.rotateX(Math.PI / 2);           // axis Y -> Z (our up)
-    addFogMesh(geo, 3.0, a, FOG_MODE_WALL);
-}
-// Ceiling: a stack of horizontal disks so steep top-down views see a misty lid
-// instead of straight through to the void.
-for (const { z, a } of [{ z: 6.5, a: 0.35 }, { z: 8.0, a: 0.45 }, { z: 9.5, a: 0.5 }]) {
-    addFogMesh(new THREE.CircleGeometry(30, 64), z, a, FOG_MODE_LID);
-}
+for (const { y, a } of EDGE_FOG_LAYERS) addFogSheet(edgeFogGeo, 0, y, 2.0, a, 0, 1, 0, 0);
+for (const x of [-16, -8, 0, 8, 16]) addFogSheet(edgeFogCrossGeo, x, 13.0, 2.0, 0.6, 1, 0, 0, 1);
+for (const z of [-0.4, 1.2, 2.8, 4.4]) addFogSheet(edgeFogFlatGeo, 0, 13.0, z, 0.55, 0, 0, 1, 1);
 scene.add(edgeFogGroup);
 
 // ==================== BATS (COLONY) ====================
@@ -2283,7 +2273,21 @@ function animate() {
         m.uniforms.uMul.value = params.edgeFogDensity;
     }
     
-   
+    for (const sheet of edgeFogGroup.children) {
+        _fogCamDir
+            .set(
+                camera.position.x - sheet.position.x,
+                camera.position.y - sheet.position.y,
+                camera.position.z - sheet.position.z,
+            )
+            .normalize();
+        const f = Math.abs(
+            _fogCamDir.x * sheet.userData.nx +
+                _fogCamDir.y * sheet.userData.ny +
+                _fogCamDir.z * sheet.userData.nz,
+        );
+        sheet.material.uniforms.uFacing.value = THREE.MathUtils.smoothstep(f, 0.05, 0.6);
+    }
     const camWaveHeight = waveHeight(
         camera.position.x,
         camera.position.y,
