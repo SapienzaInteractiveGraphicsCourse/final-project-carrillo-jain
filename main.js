@@ -176,7 +176,7 @@ overlay.innerHTML = `
             <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> &nbsp; move</div>
             <div><kbd>Space</kbd> up &nbsp;·&nbsp; <kbd>Shift</kbd> down</div>
             <div><kbd>Ctrl</kbd> boost &nbsp;·&nbsp; <kbd>Mouse</kbd> look</div>
-            <div><kbd>Esc</kbd> release pointer</div>
+                        <div><kbd>H</kbd> toggle stats</div>
         </div>
     </div>
 `;
@@ -260,6 +260,17 @@ document.head.appendChild(hudStyle);
 const hud = document.createElement('div');
 hud.id = 'flight-hud';
 document.body.appendChild(hud);
+let hudVisible = false;
+hud.style.display = 'none';
+// Press H to toggle the stats HUD.
+addEventListener('keydown', (e) => {
+    if (e.code === 'KeyH') {
+        hudVisible = !hudVisible;
+        hud.style.display = hudVisible ? '' : 'none';
+        if (hudVisible) gui.show();
+        else gui.hide();
+    }
+});
 
 // ==================== UNDERWATER SCREEN OVERLAY ====================
 const underwaterStyle = document.createElement('style');
@@ -301,6 +312,7 @@ function tickFps(now) {
 }
 let _hudT = 0;
 function updateHud(now) {
+    if (!hudVisible) return;
     if (now - _hudT < 100) return;
     _hudT = now;
     camera.getWorldDirection(_fwd);
@@ -2209,6 +2221,7 @@ moonFolder
     .add(moonParams, 'reflection', 0, 1)
     .name('Reflection')
     .onChange((v) => (waterUniforms.uMoonGlade.value = v));
+    gui.hide();
 
 // ==================== ANIMATION LOOP ====================
 function animate() {
