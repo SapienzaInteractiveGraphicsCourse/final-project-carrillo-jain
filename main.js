@@ -171,7 +171,7 @@ const overlay = document.createElement('div');
 overlay.id = 'flight-overlay';
 overlay.innerHTML = `
     <div class="panel">
-        <h1>Click to fly</h1>
+                <h1>CLICK TO START</h1>
         <div class="keys">
             <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> &nbsp; move</div>
             <div><kbd>Space</kbd> up &nbsp;·&nbsp; <kbd>Shift</kbd> down</div>
