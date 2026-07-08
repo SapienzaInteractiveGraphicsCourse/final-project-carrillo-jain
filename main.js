@@ -133,6 +133,38 @@ style.textContent = `
         font-family: ui-monospace, Menlo, monospace;
         font-size: 0.85em;
     }
+            #look-hint {
+        position: fixed;
+        left: 50%; top: 62%;
+        transform: translate(-50%, -50%);
+        display: flex; flex-direction: column; align-items: center; gap: 12px;
+        color: #e6e6e6;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-size: 1.05rem; letter-spacing: 0.04em;
+        pointer-events: none;
+        z-index: 8;
+        opacity: 0;
+        transition: opacity 0.4s ease-out;
+        text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    }
+    #look-hint.show { opacity: 0.92; }
+    #look-hint .mouse {
+        width: 26px; height: 40px;
+        border: 2px solid #e6e6e6; border-radius: 13px;
+        position: relative;
+    }
+    #look-hint .mouse::before {
+        content: ''; position: absolute;
+        left: 50%; top: 7px; width: 3px; height: 7px;
+        background: #ffaa44; border-radius: 2px;
+        transform: translateX(-50%);
+        animation: lookHintScroll 1.4s ease-in-out infinite;
+    }
+    @keyframes lookHintScroll {
+        0%, 100% { transform: translate(-50%, 0);   opacity: 1; }
+        50%      { transform: translate(-50%, 8px); opacity: 0.4; }
+    }
+    #look-hint .arrows { font-size: 1.3rem; letter-spacing: 0.5em; opacity: 0.85; }
 `;
 document.head.appendChild(style);
 const overlay = document.createElement('div');
@@ -149,10 +181,32 @@ overlay.innerHTML = `
     </div>
 `;
 document.body.appendChild(overlay);
+const lookHint = document.createElement('div');
+lookHint.id = 'look-hint';
+lookHint.innerHTML = `
+    <div class="mouse"></div>
+    <div class="arrows">↤ ↦</div>
+    <div>Move the mouse to look around</div>
+`;
+document.body.appendChild(lookHint);
+let lookHintDismissed = false;
 overlay.addEventListener('click', () => controls.lock());
-controls.addEventListener('lock', () => overlay.classList.add('hidden'));
-controls.addEventListener('unlock', () => overlay.classList.remove('hidden'));
-
+controls.addEventListener('lock', () => {
+    overlay.classList.add('hidden');
+    if (!lookHintDismissed) lookHint.classList.add('show');
+});
+controls.addEventListener('unlock', () => {
+    overlay.classList.remove('hidden');
+    lookHint.classList.remove('show');
+});
+// Fade the hint out the moment the player actually looks around.
+document.addEventListener('mousemove', (e) => {
+    if (!controls.isLocked || lookHintDismissed) return;
+    if (Math.abs(e.movementX) + Math.abs(e.movementY) > 6) {
+        lookHintDismissed = true;
+        lookHint.classList.remove('show');
+    }
+});
 // ==================== KEYBOARD INPUT & MOVEMENT ====================
 const keys = Object.create(null);
 addEventListener('keydown', (e) => {
