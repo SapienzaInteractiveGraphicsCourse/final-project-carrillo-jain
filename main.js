@@ -1782,16 +1782,6 @@ const edgeFogFrag = `
         // dense billows catch light on their tops, crevices fall into shadow
         gl_FragColor = vec4(uColor * (0.5 + density * 0.9 + relief * 0.85), alpha);
     }`;
-<<<<<<< HEAD
-
-
-const edgeFogGeo = new THREE.PlaneGeometry(44, 10);
-edgeFogGeo.rotateX(Math.PI / 2);
-const edgeFogCrossGeo = new THREE.PlaneGeometry(12, 10);
-edgeFogCrossGeo.rotateX(Math.PI / 2);
-edgeFogCrossGeo.rotateZ(Math.PI / 2);
-const edgeFogFlatGeo = new THREE.PlaneGeometry(44, 12);
-=======
 // The fog now RINGS the whole diorama: four vertical walls (front / back /
 // left / right) plus a horizontal ceiling. Every sheet is STATIC -- a
 // per-sheet uFacing uniform cross-fades a sheet out as it turns edge-on, and
@@ -1808,7 +1798,6 @@ fogWallYGeo.rotateX(Math.PI / 2);
 fogWallYGeo.rotateZ(Math.PI / 2);
 // ...and a flat lid (normal +Z) for the ceiling.
 const fogLidGeo = new THREE.PlaneGeometry(52, 50);
->>>>>>> abd981df12b264fe48079f61297f96ed68f060d8
 const edgeFogGroup = new THREE.Group();
 const edgeFogMats = [];
 const _fogCamDir = new THREE.Vector3();
@@ -1836,11 +1825,6 @@ function addFogSheet(geo, x, y, z, a, nx, ny, nz, mode) {
     edgeFogGroup.add(sheet);
     edgeFogMats.push(mat);
 }
-<<<<<<< HEAD
-for (const { y, a } of EDGE_FOG_LAYERS) addFogSheet(edgeFogGeo, 0, y, 2.0, a, 0, 1, 0, 0);
-for (const x of [-16, -8, 0, 8, 16]) addFogSheet(edgeFogCrossGeo, x, 13.0, 2.0, 0.6, 1, 0, 0, 1);
-for (const z of [-0.4, 1.2, 2.8, 4.4]) addFogSheet(edgeFogFlatGeo, 0, 13.0, z, 0.55, 0, 0, 1, 1);
-=======
 // The diorama sits roughly within x=[-9,9], y=[-11,4]; the ring is centred at
 // (0, -3.5) to match FOG_CENTER in the shader. Each wall is a few layered
 // sheets stepping outward with rising alpha, so it reads as a deep bank
@@ -1864,7 +1848,6 @@ for (const { d, a } of FOG_LAYERS) {
 for (const { z, a } of [{ z: 6.5, a: 0.4 }, { z: 8.0, a: 0.55 }, { z: 9.5, a: 0.6 }]) {
     addFogSheet(fogLidGeo, 0, FOG_MID_Y, z, a, 0, 0, 1, FOG_MODE_LID);
 }
->>>>>>> abd981df12b264fe48079f61297f96ed68f060d8
 scene.add(edgeFogGroup);
 
 // ==================== BATS (COLONY) ====================
