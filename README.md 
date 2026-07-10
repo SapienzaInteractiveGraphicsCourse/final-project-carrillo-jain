@@ -1,0 +1,136 @@
+# 🌙 Moonlit Cave Diorama
+
+An interactive real-time WebGL scene built with **[Three.js](https://threejs.org/)** for the
+Interactive Graphics course. A small rowboat, rowed by a captain, drifts along a winding river
+through a moonlit cave. Torches flicker on the walls, a colony of bats scatters when the boat draws
+near, fireflies wander through the dark, and the water reflects the moon in a shimmering glade. You
+explore the whole scene with a free-flying first-person camera.
+
+> _(Tip: add a screenshot or GIF here — for a graphics project a picture goes a long way!)_
+> `![screenshot](docs/screenshot.png)`
+
+---
+
+## ✨ Features
+
+- **Custom water shader** — summed sine waves displacing the surface, a deep-to-shallow colour
+  gradient, Fresnel reflection, torch-light speculars, a specular **moon reflection glade**, a
+  depth-buffer **foam line** where the water meets the rocks, and an underwater screen effect when
+  the camera dips below the surface.
+- **Boat wake & oar ripples** — the moving hull carves a Kelvin-style V wake into the water, and
+  each oar stroke that dips below the surface spawns an expanding ring ripple.
+- **Rigged rowing captain** — a skeletal character whose arms follow the oars using **two-bone
+  inverse kinematics (IK)**, with a hand-posed seated position. The rowing motion is driven
+  entirely in code.
+- **Animated bat colony** — 350 boid-style bats that roost, then flee up out of the cave mouth when
+  the boat approaches and later return. Uses level-of-detail (LOD) update-skipping for performance.
+- **Boat encounter state machine** — the boat cruises, freezes when it disturbs the bats, panics and
+  reverses, waits for the bats and captain to settle, then resumes cruising.
+- **Wall torches with shader flames** — animated GLSL flame quads driving flickering point lights,
+  auto-mounted onto the cave walls by raycasting.
+- **Fireflies** — GPU point-sprite particles that wander and pulse.
+- **Volumetric edge fog** — layered noise-based fog "banks" at the cave mouth that turn to face the
+  camera.
+- **Moon & moonlight** — a textured moon with a glowing halo and a directional moonlight, all
+  adjustable live.
+- **Stencil-buffer diorama cut** — the cave roof is clipped so you see a clean cross-section from
+  outside, capped with the stencil buffer.
+- **Live tuning GUI** — a `lil-gui` panel (press **H**) to tweak water, flames, boat, bats, moon and
+  more in real time.
+
+---
+
+## 🚀 Running the project
+
+There is **no build step and nothing to install** — Three.js and its add-ons are loaded from a CDN
+via the import map in `index.html`. You just need to serve the folder over a local web server
+(opening `index.html` directly with `file://` will **not** work, because browsers block ES-module
+and 3D-model loading that way).
+
+Pick whichever is easiest:
+
+**Option A — VS Code Live Server (easiest)**
+1. Open this folder in VS Code.
+2. Install the *Live Server* extension (if you don't have it).
+3. Click **Go Live** in the bottom-right status bar.
+
+**Option B — Python (no extensions needed)**
+```bash
+python3 -m http.server 8000
+```
+Then open <http://localhost:8000> in your browser.
+
+**Option C — Node**
+```bash
+npx serve
+```
+
+Once it loads, **click the screen** to lock the mouse and start flying.
+
+---
+
+## 🎮 Controls
+
+| Key / Input      | Action                         |
+| ---------------- | ------------------------------ |
+| **Click**        | Start / lock the mouse         |
+| **W A S D**      | Move                           |
+| **Space**        | Move up                        |
+| **Shift**        | Move down                      |
+| **Ctrl**         | Speed boost                    |
+| **Mouse**        | Look around                    |
+| **Mouse wheel**  | Fine-tune fly speed            |
+| **H**            | Toggle the stats HUD + tuning GUI |
+| **Esc**          | Release the mouse              |
+
+---
+
+## 🛠️ Graphics techniques used
+
+The notable graphics techniques applied in this project:
+
+- Custom **GLSL vertex + fragment shaders** for water, torch flames, fireflies and edge fog.
+- **Wave displacement** on the water with analytically derived normals for correct lighting.
+- **Depth-texture foam**: the scene depth is rendered to a render target, then compared against the
+  water depth to draw a foam line at intersections.
+- **Fresnel** reflectance and a specular **moon-glade** reflection built from the same wave normals.
+- **Skeletal animation** and **two-bone inverse kinematics** for the captain's arms on the oars.
+- **Boid-style flocking** with steering behaviours plus **LOD** frame-skipping for the bat colony.
+- **Stencil-buffer capping** to cleanly close the clipped cave cross-section (diorama effect).
+- **Clipping planes** to cut the cave roof and entrance.
+- **Shadow mapping** with a limited number of active shadow-casting torches for performance.
+- **Custom Z-up fly camera** with pointer-lock mouse look.
+
+---
+
+## 📁 Project structure
+
+```
+Interactive_Graphics_Project/
+├── index.html      # Entry point + Three.js CDN import map
+├── main.js         # All scene setup, shaders, animation & logic
+└── models/         # 3D assets (cave, boat, captain, bats, torch, textures)
+```
+
+---
+
+## 📦 Credits & attribution
+
+- **[Three.js](https://threejs.org/)** r0.160 — 3D engine and loaders (loaded from the unpkg CDN).
+- **3D models** (geometry & textures) are downloaded assets: the rowboat, cave, captain, bats and
+  wall torch. _(TODO: add the source / author link for each downloaded model — required if they came
+  from sites like Sketchfab, and good practice for the report.)_
+- **All animation, interactivity and shaders are our own code** — none of it was imported with the
+  models. This includes the coded rowing motion and inverse-kinematics arms, the bat flocking and
+  flee/return behaviour, the water simulation (waves, wake, oar ripples, foam, moon reflection), the
+  torch flames, fireflies and edge fog. AI coding assistance was used while writing this code.
+
+---
+
+## 👥 Authors
+
+Christian Carrillo - XXXXXXX
+Akshata Jain - 2263069
+
+
+
