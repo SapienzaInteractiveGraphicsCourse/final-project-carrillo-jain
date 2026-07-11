@@ -1,4 +1,6 @@
-# 🌙 Moonlit Cave Diorama
+# 🌙 Moonlit Cave Diorama 🦇
+
+![Boat drifting toward the moonlit cave opening](report_media/Opening_boat_moon+.gif)
 
 An interactive real-time WebGL scene built with **[Three.js](https://threejs.org/)** for the
 Interactive Graphics course. A small rowboat, rowed by a captain, drifts along a winding river
@@ -6,8 +8,14 @@ through a moonlit cave. Torches flicker on the walls, a colony of bats scatters 
 near, fireflies wander through the dark, and the water reflects the moon in a shimmering glade. You
 explore the whole scene with a free-flying first-person camera.
 
-> _(Tip: add a screenshot or GIF here — for a graphics project a picture goes a long way!)_
-> `![screenshot](docs/screenshot.png)`
+## 📖 Project report
+
+**[Open the interactive report → `report.html`](report.html)** — the full illustrated write-up of
+every system (water shader, stencil diorama cut, IK captain, bat colony, …) with animated GIF
+figures and diagrams. It doubles as the presentation: press **P** inside it for slide mode.
+Open it while the local server is running (e.g. <http://localhost:8000/report.html>), or just
+double-click the file — it also works from disk.
+All animated figures live in [`report_media/`](report_media/).
 
 ---
 
@@ -87,7 +95,7 @@ Once it loads, **click the screen** to lock the mouse and start flying.
 
 ## 🛠️ Graphics techniques used
 
-The notable graphics techniques applied in this project:
+The graphics techniques applied in this project:
 
 - Custom **GLSL vertex + fragment shaders** for water, torch flames, fireflies and edge fog.
 - **Wave displacement** on the water with analytically derived normals for correct lighting.
@@ -109,7 +117,9 @@ The notable graphics techniques applied in this project:
 Interactive_Graphics_Project/
 ├── index.html      # Entry point + Three.js CDN import map
 ├── main.js         # All scene setup, shaders, animation & logic
-└── models/         # 3D assets (cave, boat, captain, bats, torch, textures)
+├── models/         # 3D assets (cave, boat, captain, bats, torch, textures)
+├── report.html     # Interactive project report + presentation (press P)
+└── report_media/   # GIFs & stills captured from the live scene
 ```
 
 ---
@@ -117,9 +127,12 @@ Interactive_Graphics_Project/
 ## 📦 Credits & attribution
 
 - **[Three.js](https://threejs.org/)** r0.160 — 3D engine and loaders (loaded from the unpkg CDN).
-- **3D models** (geometry & textures) are downloaded assets: the rowboat, cave, captain, bats and
-  wall torch. _(TODO: add the source / author link for each downloaded model — required if they came
-  from sites like Sketchfab, and good practice for the report.)_
+- **3D models** (geometry & textures) are downloaded assets:
+  - **[Captain](https://sketchfab.com/3d-models/captain-clark-rigged-fixed-dfe9529c43d8479ea1c0b5adac7d3348)**
+  - **[Torch](https://sketchfab.com/3d-models/old-torch-with-wall-mounting-8ce10da00f3f49bf98a01664bc21da1c)**
+  - **[Boat](https://sketchfab.com/3d-models/old-rowboat-9922d5678af84adeb1c9b479856446ca)**
+  - **[Cave](https://www.fab.com/listings/a8683901-ef0b-4bd0-bd51-3e44647212e2)**
+  - **[Bat](https://sketchfab.com/3d-models/vampire-bat-806dcba0959944f880272512b841a019)**
 - **All animation, interactivity and shaders are our own code** — none of it was imported with the
   models. This includes the coded rowing motion and inverse-kinematics arms, the bat flocking and
   flee/return behaviour, the water simulation (waves, wake, oar ripples, foam, moon reflection), the
@@ -129,7 +142,7 @@ Interactive_Graphics_Project/
 
 ## 👥 Authors
 
-Christian Carrillo - XXXXXXX
+Christian Carrillo - 2017626
 Akshata Jain - 2263069
 
 
