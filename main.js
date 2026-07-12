@@ -1858,6 +1858,7 @@ function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
                 value: EDGE_FOG_COLOR,
             },
         },
+        
         vertexShader: edgeFogVert,
         fragmentShader: edgeFogFrag,
         transparent: true,
@@ -1865,6 +1866,7 @@ function addFogSheet(geo, x, y, z, a, nx, ny, nz, cross) {
         side: THREE.DoubleSide,
     });
     const sheet = new THREE.Mesh(geo, mat);
+    sheet.renderOrder = 3;
     sheet.position.set(x, y, z);
     sheet.userData.nx = nx;
     sheet.userData.ny = ny;
@@ -2214,7 +2216,8 @@ moonFolder
 function animate() {
     requestAnimationFrame(animate);
     const now = performance.now();
-    const dt = Math.min(clock.getDelta(), 0.1);
+    let dt = Math.min(clock.getDelta(), 0.1);
+    if (!assetsReady) dt = 0;
     if (controls.isLocked) {
         inputDir.set(
             (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0),
