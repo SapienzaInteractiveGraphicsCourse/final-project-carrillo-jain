@@ -8,6 +8,13 @@ through a moonlit cave. Torches flicker on the walls, a colony of bats scatters 
 near, fireflies wander through the dark, and the water reflects the moon in a shimmering glade. You
 explore the whole scene with a free-flying first-person camera.
 
+## 🔗 Live links (GitHub Pages)
+
+- **🌙 Interactive scene:** <https://sapienzainteractivegraphicscourse.github.io/final-project-carrillo-jain/>
+- **📖 Project report:** <https://sapienzainteractivegraphicscourse.github.io/final-project-carrillo-jain/report.html>
+
+*Note: the 3D models take a few moments to load in after the page opens.*
+
 ## 📖 Project report
 
 **[Open the interactive report → `report.html`](report.html)** — the full illustrated write-up of
