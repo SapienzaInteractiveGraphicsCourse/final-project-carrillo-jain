@@ -54,35 +54,6 @@ All animated figures live in [`report_media/`](report_media/).
 
 ---
 
-## 🚀 Running the project
-
-There is **no build step and nothing to install** — Three.js and its add-ons are loaded from a CDN
-via the import map in `index.html`. You just need to serve the folder over a local web server
-(opening `index.html` directly with `file://` will **not** work, because browsers block ES-module
-and 3D-model loading that way).
-
-Pick whichever is easiest:
-
-**Option A — VS Code Live Server (easiest)**
-1. Open this folder in VS Code.
-2. Install the *Live Server* extension (if you don't have it).
-3. Click **Go Live** in the bottom-right status bar.
-
-**Option B — Python (no extensions needed)**
-```bash
-python3 -m http.server 8000
-```
-Then open <http://localhost:8000> in your browser.
-
-**Option C — Node**
-```bash
-npx serve
-```
-
-Once it loads, **click the screen** to lock the mouse and start flying.
-
----
-
 ## 🎮 Controls
 
 | Key / Input      | Action                         |
