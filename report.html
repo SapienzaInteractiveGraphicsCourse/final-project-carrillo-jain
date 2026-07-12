@@ -466,9 +466,86 @@ stencilPassGroup.add(backPass, frontPass);</code></pre>
   both sinusoidal functions of a shared rowing-time accumulator. <strong>There is no baked rowing animation</strong>,
   the whole stroke is procedural, which lets the bat "panic" encounter (Section 3.7) speed the oars up independently
   of the boat's own speed.</p>
+  <h4 style="color:var(--amber);margin-top:22px">Posing the captain into the boat</h4>
+  <p>The captain is a separate rigged glTF character (Mixamo-style skeleton) that ships in a standing T-pose with
+  <strong>no animation clips</strong>; the seated pose is built in code, once, right after loading. First the model is
+  scaled so its bounding-box height matches <code>CAPT_HEIGHT</code>. Then the leg bones are found by name and bent
+  directly with quaternion rotations: each thigh (<code>mixamorig:LeftUpLeg</code> / <code>RightUpLeg</code>) is
+  rotated <code>CAPT_THIGH_BEND</code> (≈83°) about the sideways axis to raise it into a sitting position, plus a
+  mirrored <code>CAPT_LEG_SPREAD</code> yaw so the knees part naturally around the hull, and each knee
+  (<code>mixamorig:LeftLeg</code> / <code>RightLeg</code>) is bent back by <code>CAPT_KNEE_BEND</code> so the feet
+  tuck under the seat:</p>
+  <pre><code>const sitThigh = (boneName, spreadSign) => {
+    const b = findBone(model, boneName);
+    b.quaternion
+        .multiply(_captQ.setFromAxisAngle(CAPT_ARM_AXIS,    CAPT_THIGH_BEND))
+        .multiply(_captQ.setFromAxisAngle(CAPT_SPREAD_AXIS, CAPT_LEG_SPREAD * spreadSign));
+};
+sitThigh('mixamorig:LeftUpLeg',  -1);
+sitThigh('mixamorig:RightUpLeg', +1);</code></pre>
+  <p>After the bends, the model is translated so that its <em>hip bone's</em> world position, not its original
+  origin, sits at the local zero, which makes the pelvis the anchor point of the whole character. The result is
+  parented into a <code>captGroup</code> inside the boat hierarchy, rotated 180° to face the stern (rowers face
+  backwards), and placed on the thwart at <code>CAPT_SEAT</code>; the exposed <code>seatHeight</code> GUI slider
+  moves this group live. Because the pose is applied to bone quaternions rather than baked vertices, the arms remain
+  fully free for the IK described next, and the rest pose of every arm bone is recorded at this moment as the IK's
+  reference frame.</p>
+  <figure>
+    <svg viewBox="0 0 860 356" xmlns="http://www.w3.org/2000/svg" style="display:block;width:100%;background:#0d141d" font-family="Segoe UI,Arial,sans-serif" font-size="13">
+      <!-- left: loaded rest pose (T-pose), dimmed -->
+      <circle cx="150" cy="70" r="12" fill="none" stroke="#33465c" stroke-width="3"/>
+      <line x1="150" y1="82"  x2="150" y2="175" stroke="#33465c" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="96"  y1="108" x2="204" y2="108" stroke="#33465c" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="150" y1="175" x2="132" y2="258" stroke="#33465c" stroke-width="3.5" stroke-linecap="round"/>
+      <line x1="150" y1="175" x2="168" y2="258" stroke="#33465c" stroke-width="3.5" stroke-linecap="round"/>
+      <circle cx="150" cy="175" r="6" fill="#33465c"/>
+      <text x="150" y="290" fill="#5d7285" text-anchor="middle">loaded rest pose, no animation clips</text>
+      <!-- middle: transform arrow -->
+      <line x1="255" y1="160" x2="382" y2="160" stroke="#8fa3b8" stroke-width="2"/>
+      <polygon points="392,160 378,153 378,167" fill="#8fa3b8"/>
+      <text x="322" y="142" fill="#f0a35e" text-anchor="middle" font-family="Consolas,monospace" font-size="13">sitThigh() · sitKnee()</text>
+      <text x="322" y="182" fill="#5d7285" text-anchor="middle" font-size="12">quaternion bends, once at load</text>
+      <!-- right: seated pose in the boat -->
+      <path d="M 535,190 Q 625,242 715,190" fill="none" stroke="#33465c" stroke-width="3"/>
+      <line x1="560" y1="190" x2="660" y2="190" stroke="#33465c" stroke-width="4"/>
+      <text x="548" y="212" fill="#5d7285" text-anchor="end">CAPT_SEAT (thwart)</text>
+      <!-- standing-leg reference (dashed) -->
+      <line x1="600" y1="185" x2="600" y2="224" stroke="#33465c" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <line x1="672" y1="185" x2="712" y2="185" stroke="#33465c" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <!-- torso, head -->
+      <line x1="600" y1="185" x2="600" y2="95" stroke="#3ed6b5" stroke-width="4" stroke-linecap="round"/>
+      <circle cx="600" cy="80" r="12" fill="none" stroke="#3ed6b5" stroke-width="3"/>
+      <!-- arm left in rest pose (dim, dashed) -->
+      <line x1="600" y1="112" x2="638" y2="158" stroke="#5d7285" stroke-width="3" stroke-dasharray="5 4" stroke-linecap="round"/>
+      <text x="712" y="108" fill="#8fa3b8" font-size="12">arm bones untouched:</text>
+      <text x="712" y="124" fill="#8fa3b8" font-size="12">rest pose recorded here,</text>
+      <text x="712" y="140" fill="#8fa3b8" font-size="12">driven by IK (Fig. 10)</text>
+      <!-- thigh, shin, foot -->
+      <line x1="600" y1="185" x2="672" y2="185" stroke="#3ed6b5" stroke-width="4" stroke-linecap="round"/>
+      <line x1="672" y1="185" x2="666" y2="252" stroke="#3ed6b5" stroke-width="4" stroke-linecap="round"/>
+      <line x1="666" y1="252" x2="682" y2="256" stroke="#3ed6b5" stroke-width="3" stroke-linecap="round"/>
+      <!-- angle arcs -->
+      <path d="M 600,215 A 30,30 0 0 0 630,185" fill="none" stroke="#f0a35e" stroke-width="2"/>
+      <text x="637" y="215" fill="#f0a35e" font-size="13">≈ 83°</text>
+      <path d="M 698,185 A 26,26 0 0 1 672,211" fill="none" stroke="#f0a35e" stroke-width="2"/>
+      <text x="704" y="224" fill="#f0a35e" font-size="13">≈ −86°</text>
+      <!-- hip anchor -->
+      <circle cx="600" cy="185" r="14" fill="none" stroke="#f0a35e" opacity="0.35"/>
+      <circle cx="600" cy="185" r="8" fill="#f0a35e"/>
+      <circle cx="672" cy="185" r="6" fill="#c9d6ea"/>
+      <text x="586" y="166" fill="#f0a35e" text-anchor="end">hips → local origin (anchor)</text>
+      <text x="625" y="290" fill="#8fa3b8" text-anchor="middle">re-centred on the hips, parented into the boat</text>
+      <!-- formula strip -->
+      <line x1="40" y1="298" x2="820" y2="298" stroke="#1c2836" stroke-width="1.5"/>
+      <text x="430" y="326" fill="#f0a35e" font-size="14.5" text-anchor="middle">thigh +CAPT_THIGH_BEND ≈ 83° · knee CAPT_KNEE_BEND ≈ −86° · ±CAPT_LEG_SPREAD parts the knees (mirrored L/R)</text>
+      <text x="430" y="347" fill="#8fa3b8" font-size="12" text-anchor="middle">applied once to the bone quaternions at load — no baked pose or animation is imported with the model</text>
+    </svg>
+    <figcaption><b>Figure 9.</b> The load-time seated pose: the T-posed skeleton's thigh and knee bones are bent by
+    fixed quaternion rotations, the model is re-centred on its hip bone, then parented into the boat facing the
+    stern. The arm bones are deliberately left untouched for the per-frame IK (Figure 10).</figcaption>
+  </figure>
   <h4 style="color:var(--amber);margin-top:22px">The captain: analytic two-bone IK</h4>
-  <p>A separate rigged glTF character (Mixamo-style skeleton) is posed into a seated position once at load time, then
-  re-centred on its hip joint and parented into the boat. Rather than hand-authoring a rowing clip, a classic
+  <p>With the captain seated and parented into the boat, the arms are animated separately. Rather than hand-authoring a rowing clip, a classic
   two-bone (shoulder/elbow) analytic IK chain is solved <em>every frame</em>, aiming each hand at that frame's
   oar-handle position:</p>
   <figure>
@@ -499,7 +576,7 @@ stencilPassGroup.add(backPass, frontPass);</code></pre>
       <text x="430" y="326" fill="#f0a35e" font-size="14.5" text-anchor="middle">α = acos( (L1² + d² − L2²) / (2 · L1 · d) )</text>
       <text x="430" y="347" fill="#8fa3b8" font-size="12" text-anchor="middle">the elbow is placed L1 along the shoulder→target axis, then rotated by α about a perpendicular reference axis</text>
     </svg>
-    <figcaption><b>Figure 9.</b> Two-bone analytic IK via the law of cosines, no iteration, no solver library.</figcaption>
+    <figcaption><b>Figure 10.</b> Two-bone analytic IK via the law of cosines, no iteration, no solver library.</figcaption>
   </figure>
   <pre><code>const cosA = clamp((L1*L1 + d*d - L2*L2) / (2*L1*d), -1, 1);
 const a = Math.acos(cosA);
@@ -511,7 +588,7 @@ const a = Math.acos(cosA);
   each hand bone to align with the forearm and applies a configurable roll so the palm faces the oar shaft.</p>
   <figure>
     <video src="report_media/captain_rowing.mp4" autoplay loop muted playsinline></video>
-    <figcaption><b>Figure 10.</b> The IK solution live: both hands track the sinusoidally sweeping oar handles every
+    <figcaption><b>Figure 11.</b> The IK solution live: both hands track the sinusoidally sweeping oar handles every
     frame while the boat pitches and rolls on the swell beneath.</figcaption>
   </figure>
 </section>
@@ -562,13 +639,13 @@ const a = Math.acos(cosA);
       </g>
       <text x="86" y="245" fill="#8fa3b8" font-size="11">boat &lt; 2.6 of roost</text>
     </svg>
-    <figcaption><b>Figure 11.</b> The two layered state machines: each bat runs its own steering FSM (top), while a
+    <figcaption><b>Figure 12.</b> The two layered state machines: each bat runs its own steering FSM (top), while a
     scene-level encounter script (bottom) freezes the boat, drives it backward at <code>panicBoatMult</code> speed
     with faster oar strokes, and re-arms once the boat is far enough away.</figcaption>
   </figure>
   <figure>
     <video src="report_media/scared_by_bats.mp4" autoplay loop muted playsinline></video>
-    <figcaption><b>Figure 12.</b> The encounter firing: the colony erupts from the roost and streams toward the exit
+    <figcaption><b>Figure 13.</b> The encounter firing: the colony erupts from the roost and streams toward the exit
     while the frozen boat waits below, then the captain rows backward in panic.</figcaption>
   </figure>
   <p>Naively updating skeletal poses and steering for every bat every frame was the single largest performance risk
@@ -587,7 +664,7 @@ const a = Math.acos(cosA);
   brightness pulses with the same phase attribute, composited with additive blending.</p>
   <figure>
     <video src="report_media/fireflies.mp4" autoplay loop muted playsinline></video>
-    <figcaption><b>Figure 13.</b> GPU-driven fireflies drifting at the cave mouth.</figcaption>
+    <figcaption><b>Figure 14.</b> GPU-driven fireflies drifting at the cave mouth.</figcaption>
   </figure>
 </section>
 
@@ -605,7 +682,7 @@ const a = Math.acos(cosA);
   underwater is felt as a full-screen effect, not just a change in the 3D scene.</p>
   <figure>
     <img src="report_media/Screenshots/fog.png" alt="Fog banks over the moonlit water at the world edge">
-    <figcaption><b>Figure 14.</b> The edge fog in place: layered noise-textured fog banks swallow the horizon under
+    <figcaption><b>Figure 15.</b> The edge fog in place: layered noise-textured fog banks swallow the horizon under
     the moon, blending with <code>FogExp2</code> so the world fades out instead of ending at visible geometry.</figcaption>
   </figure>
 </section>
@@ -641,7 +718,7 @@ const a = Math.acos(cosA);
       </g>
       <text x="30" y="34" fill="#8fa3b8">One animation frame:</text>
     </svg>
-    <figcaption><b>Figure 15.</b> Frame structure. The extra pass stays cheap: fewer objects, half resolution, while
+    <figcaption><b>Figure 16.</b> Frame structure. The extra pass stays cheap: fewer objects, half resolution, while
     giving the water shader an accurate picture of nearby solid geometry for blending.</figcaption>
   </figure>
 </section>
@@ -697,7 +774,7 @@ const a = Math.acos(cosA);
   where or when the player chooses to look.</p>
   <figure>
     <img src="report_media/Screenshots/Moon_Opening.png" alt="Moonlit water">
-    <figcaption><b>Figure 16.</b> The moon framed by the cave opening: moonlight, swell, and fog.</figcaption>
+    <figcaption><b>Figure 17.</b> The moon framed by the cave opening: moonlight, swell, and fog.</figcaption>
   </figure>
   <p style="color:var(--dim);font-family:Segoe UI,Arial,sans-serif;font-size:13px;margin-top:40px">
   Christian Carrillo · Akshata Jain, Interactive Graphics, Sapienza University of Rome, 2026.<br>
