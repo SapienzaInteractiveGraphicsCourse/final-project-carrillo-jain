@@ -147,8 +147,7 @@ Interactive_Graphics_Project/
 
 ## 👥 Authors
 
-Christian Carrillo - 2017626
-Akshata Jain - 2263069
+Christian Carrillo - 2017626, Akshata Jain - 2263069
 
 
 
