@@ -3,8 +3,8 @@
 ![Boat drifting toward the moonlit cave opening](report_media/Opening_boat_moon+.gif)
 
 An interactive real-time WebGL scene built with **[Three.js](https://threejs.org/)** for the
-Interactive Graphics course. A small rowboat, rowed by a captain, drifts along a winding river
-through a moonlit cave. Torches flicker on the walls, a colony of bats scatters when the boat draws
+Interactive Graphics course. A small rowboat, rowed by a captain, drifts across open moonlit water and into a moonlit cave.
+Torches flicker on the walls, a colony of bats scatters when the boat draws
 near, fireflies wander through the dark, and the water reflects the moon in a shimmering glade. You
 explore the whole scene with a free-flying first-person camera.
 
