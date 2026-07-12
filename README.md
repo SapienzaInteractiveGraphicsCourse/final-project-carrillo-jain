@@ -17,12 +17,9 @@ explore the whole scene with a free-flying first-person camera.
 
 ## 📖 Project report
 
-**[Open the interactive report → `report.html`](report.html)** — the full illustrated write-up of
-every system (water shader, stencil diorama cut, IK captain, bat colony, …) with animated GIF
-figures and diagrams. It doubles as the presentation: press **P** inside it for slide mode.
-Open it while the local server is running (e.g. <http://localhost:8000/report.html>), or just
-double-click the file — it also works from disk.
-All animated figures live in [`report_media/`](report_media/).
+ The full illustrated write-up of every system (water shader, stencil diorama cut, IK captain, bat colony, …) 
+ with animated GIF figures and diagrams. It doubles as the presentation: press **P** inside it for slide mode.
+Open it with the link above. All animated figures live in [`report_media/`](report_media/).
 
 ---
 
