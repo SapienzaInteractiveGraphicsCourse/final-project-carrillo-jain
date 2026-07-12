@@ -112,7 +112,7 @@ body.pres #presHud{display:block}
   <h1>Moonlit Cave Diorama</h1>
   <div class="authors"><b>Christian Carrillo</b> 2017626 &nbsp;·&nbsp; <b>Akshata Jain</b> 2263069</div>
   <div class="uni">A real-time WebGL scene built from scratch on three.js, no physics or game engine.</div>
-  <p class="abstract">A first-person flight through a cut-away cave river inhabited by an autonomously rowing boat,
+  <p class="abstract">A first-person flight through a cut-away cave inhabited by an autonomously rowing boat,
   a colony of 350 bats, fireflies and moonlit water, rendered as a stencil-clipped "diorama".</p>
 </section>
 
@@ -221,7 +221,7 @@ body.pres #presHud{display:block}
   a longer spline carries <strong>the boat</strong> in and out of the cave; the boat carries a skeletal, IK-rigged
   <strong>captain</strong> whose arms track the procedurally animated oars every frame; <strong>350 rigged bats</strong>
   roost deep in the cave and react to the boat with a scripted encounter; <strong>the water</strong> is a single
-  custom-shader mesh with waves, oar ripples, a boat wake, torch reflections, a moon glade and shoreline foam; and
+  custom-shader mesh with waves, oar ripples, a boat wake, torch reflections, a moon glade and shoreline opacity blending; and
   <strong>fireflies</strong> plus <strong>layered fog banks</strong> add atmosphere at the edges.</p>
   <div class="fig-row">
     <figure>
@@ -438,12 +438,12 @@ stencilPassGroup.add(backPass, frontPass);</code></pre>
     <figcaption><b>Figure 7.</b> The water systems working together: swell, oar-strike ripples, torch specular lobes,
     and the boat floating on the same <code>waveHeight()</code> the shader displaces with.</figcaption>
   </figure>
-  <h4 style="color:var(--amber);margin-top:22px">Shoreline foam</h4>
+  <h4 style="color:var(--amber);margin-top:22px">Shoreline opacity blending</h4>
   <p>Before the main render, the scene is rendered once more (water, bats and fog hidden) into an off-screen
   <code>WebGLRenderTarget</code> carrying a half-resolution <code>DepthTexture</code>. In the main pass, the water
   fragment shader compares its own view-space depth against that texture at the same screen position; where the two
-  are nearly equal the water is touching solid geometry, and the shader blends in white foam (visible hugging the
-  banks in Figure 7).</p>
+  are nearly equal the water is touching solid geometry, and the shader increases the water's opacity there (visible
+  hugging the banks in Figure 7).</p>
 </section>
 
 <section id="flames">
@@ -607,7 +607,7 @@ const a = Math.acos(cosA);
 <section id="prepass">
   <h3>3.10&ensp;Depth Pre-pass and Frame Structure</h3>
   <p>Because <code>three.js</code> materials cannot normally sample the depth of <em>other</em> objects, the
-  shoreline foam (Section 3.4) requires a manual two-pass frame:</p>
+  shoreline opacity blending (Section 3.4) requires a manual two-pass frame:</p>
   <figure>
     <svg viewBox="0 0 860 210" xmlns="http://www.w3.org/2000/svg" style="display:block;width:100%;background:#0d141d" font-family="Segoe UI,Arial,sans-serif" font-size="13">
       <defs><marker id="arr3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#3ed6b5"/></marker></defs>
@@ -636,7 +636,7 @@ const a = Math.acos(cosA);
       <text x="30" y="34" fill="#8fa3b8">One animation frame:</text>
     </svg>
     <figcaption><b>Figure 15.</b> Frame structure. The extra pass stays cheap: fewer objects, half resolution, while
-    giving the water shader an accurate picture of nearby solid geometry for foam.</figcaption>
+    giving the water shader an accurate picture of nearby solid geometry for blending.</figcaption>
   </figure>
 </section>
 
