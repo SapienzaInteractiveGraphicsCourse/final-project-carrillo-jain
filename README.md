@@ -3,7 +3,7 @@
 ![Boat drifting toward the moonlit cave opening](report_media/Opening_boat_moon+.gif)
 
 An interactive real-time WebGL scene built with **[Three.js](https://threejs.org/)** for the
-Interactive Graphics course. A small rowboat, rowed by a captain, drifts across open moonlit water and into a moonlit cave.
+Interactive Graphics course. A small rowboat, rowed by a captain, drifts across open moonlit water and into a cave.
 Torches flicker on the walls, a colony of bats scatters when the boat draws
 near, fireflies wander through the dark, and the water reflects the moon in a shimmering glade. You
 explore the whole scene with a free-flying first-person camera.
@@ -29,9 +29,8 @@ All animated figures live in [`report_media/`](report_media/).
 ## ✨ Features
 
 - **Custom water shader** — summed sine waves displacing the surface, a deep-to-shallow colour
-  gradient, Fresnel reflection, torch-light speculars, a specular **moon reflection glade**, a
-  depth-buffer **foam line** where the water meets the rocks, and an underwater screen effect when
-  the camera dips below the surface.
+  gradient, Fresnel reflection, torch-light speculars, a specular **moon reflection glade**, 
+  a depth-buffer effect that increases the water's opacity where it meets the rocks, and an underwater screen effect when the camera dips below the surface.
 - **Boat wake & oar ripples** — the moving hull carves a Kelvin-style V wake into the water, and
   each oar stroke that dips below the surface spawns an expanding ring ripple.
 - **Rigged rowing captain** — a skeletal character whose arms follow the oars using **two-bone
@@ -106,8 +105,7 @@ The graphics techniques applied in this project:
 
 - Custom **GLSL vertex + fragment shaders** for water, torch flames, fireflies and edge fog.
 - **Wave displacement** on the water with analytically derived normals for correct lighting.
-- **Depth-texture foam**: the scene depth is rendered to a render target, then compared against the
-  water depth to draw a foam line at intersections.
+- **Depth-texture opacity boost**: the scene depth is rendered to a render target, then compared against the water depth to increase opacity where the water meets solid geometry.
 - **Fresnel** reflectance and a specular **moon-glade** reflection built from the same wave normals.
 - **Skeletal animation** and **two-bone inverse kinematics** for the captain's arms on the oars.
 - **Boid-style flocking** with steering behaviours plus **LOD** frame-skipping for the bat colony.
@@ -142,7 +140,7 @@ Interactive_Graphics_Project/
   - **[Bat](https://sketchfab.com/3d-models/vampire-bat-806dcba0959944f880272512b841a019)**
 - **All animation, interactivity and shaders are our own code** — none of it was imported with the
   models. This includes the coded rowing motion and inverse-kinematics arms, the bat flocking and
-  flee/return behaviour, the water simulation (waves, wake, oar ripples, foam, moon reflection), the
+  flee/return behaviour, the water simulation (waves, wake, oar ripples, shoreline opacity blending, moon reflection), the
   torch flames, fireflies and edge fog. AI coding assistance was used while writing this code.
 
 ---
