@@ -1,6 +1,6 @@
 # 🌙 Moonlit Cave Diorama 🦇
 
-![Boat drifting toward the moonlit cave opening](report_media/Opening_boat_moon+.gif)
+![Boat drifting toward the moonlit cave opening](report_media/Opening_boat_moon_readme.gif)
 
 An interactive real-time WebGL scene built with **[Three.js](https://threejs.org/)** for the
 Interactive Graphics course. A small rowboat, rowed by a captain, drifts across open moonlit water and into a cave.

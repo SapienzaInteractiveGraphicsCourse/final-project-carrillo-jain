@@ -133,6 +133,22 @@ style.textContent = `
         font-family: ui-monospace, Menlo, monospace;
         font-size: 0.85em;
     }
+    #flight-overlay.loading { cursor: default; }
+    #flight-overlay.loading h1 { animation: loadPulse 1.6s ease-in-out infinite; }
+    @keyframes loadPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+    #flight-overlay .load-wrap { margin: 0 0 1.5em; transition: opacity 0.5s ease-out; }
+    #flight-overlay .load-wrap.done { opacity: 0; }
+    #flight-overlay .load-track {
+        width: 240px; height: 4px; margin: 0 auto 10px;
+        background: rgba(230, 230, 230, 0.15);
+        border-radius: 2px; overflow: hidden;
+    }
+    #flight-overlay .load-bar {
+        height: 100%; width: 0%;
+        background: #ffaa44; border-radius: 2px;
+        transition: width 0.25s ease-out;
+    }
+    #flight-overlay .load-pct { font-size: 0.8rem; opacity: 0.65; letter-spacing: 0.1em; }
             #look-hint {
         position: fixed;
         left: 50%; top: 62%;
@@ -171,7 +187,11 @@ const overlay = document.createElement('div');
 overlay.id = 'flight-overlay';
 overlay.innerHTML = `
     <div class="panel">
-                <h1>CLICK TO START</h1>
+                <h1>LOADING</h1>
+        <div class="load-wrap">
+            <div class="load-track"><div class="load-bar"></div></div>
+            <div class="load-pct">0%</div>
+        </div>
         <div class="keys">
             <div><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd> &nbsp; move</div>
             <div><kbd>Space</kbd> up &nbsp;·&nbsp; <kbd>Shift</kbd> down</div>
@@ -190,7 +210,36 @@ lookHint.innerHTML = `
 `;
 document.body.appendChild(lookHint);
 let lookHintDismissed = false;
-overlay.addEventListener('click', () => controls.lock());
+let assetsReady = false;
+let bestPct = 0;
+let finishTimer = null;
+const loadTitle = overlay.querySelector('h1');
+const loadWrap = overlay.querySelector('.load-wrap');
+const loadBar = overlay.querySelector('.load-bar');
+const loadPctEl = overlay.querySelector('.load-pct');
+overlay.classList.add('loading');
+THREE.DefaultLoadingManager.onStart = () => {
+    if (finishTimer) { clearTimeout(finishTimer); finishTimer = null; }
+};
+THREE.DefaultLoadingManager.onProgress = (url, itemsLoaded, itemsTotal) => {
+    bestPct = Math.max(bestPct, Math.round((itemsLoaded / itemsTotal) * 100));
+    loadBar.style.width = bestPct + '%';
+    loadPctEl.textContent = bestPct + '%';
+};
+THREE.DefaultLoadingManager.onLoad = () => {
+    if (finishTimer) clearTimeout(finishTimer);
+    finishTimer = setTimeout(() => {
+        assetsReady = true;
+        loadBar.style.width = '100%';
+        loadWrap.classList.add('done');
+        overlay.classList.remove('loading');
+        loadTitle.textContent = 'CLICK TO START';
+    }, 400);
+};
+setTimeout(() => {
+    if (!assetsReady && THREE.DefaultLoadingManager.onLoad) THREE.DefaultLoadingManager.onLoad();
+}, 30000);
+overlay.addEventListener('click', () => { if (assetsReady) controls.lock(); });
 controls.addEventListener('lock', () => {
     overlay.classList.add('hidden');
     if (!lookHintDismissed) lookHint.classList.add('show');
@@ -199,7 +248,6 @@ controls.addEventListener('unlock', () => {
     overlay.classList.remove('hidden');
     lookHint.classList.remove('show');
 });
-// Fade the hint out the moment the player actually looks around.
 document.addEventListener('mousemove', (e) => {
     if (!controls.isLocked || lookHintDismissed) return;
     if (Math.abs(e.movementX) + Math.abs(e.movementY) > 6) {
@@ -342,8 +390,6 @@ scene.add(skyShaft, skyShaft.target);
 // ==================== MOON & MOONLIGHT ====================
 const MOON_RADIUS = 11;
 const MOON_TARGET = new THREE.Vector3(0, -1.0, -0.5);
-// Shared with the water shader (same Vector3 instance backs uMoonPos),
-// so moving the moon in the GUI moves the reflection automatically.
 const MOON_WORLD = new THREE.Vector3();
 const moonParams = {
     azimuth: 0,
@@ -424,10 +470,6 @@ function placeMoon() {
     moonLight.position.copy(MOON_WORLD);
 }
 placeMoon();
-
-// The moon's reflection is rendered inside the water shader itself (see
-// "Moon glade" in waterFragment): a real specular glade that converges on
-// the point beneath the moon and shatters into animated glints on the waves.
 
 // ==================== RIVER & BOAT PATHS ====================
 const riverPoints = [
@@ -634,9 +676,6 @@ const _flameFrag = `
         return mix(mix(hash(i),            hash(i + vec2(1.0, 0.0)), u.x),
                    mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
     }
-    // 4 octaves x2 calls (domain warp) ~= the old 5-octave single call in
-    // cost, but the warped turbulence reads as real licking tongues instead
-    // of a scrolling texture.
     float fbm(vec2 p){
         float v = 0.0, a = 0.5;
         for (int i = 0; i < 4; i++){ v += a * noise(p); p *= 2.03; a *= 0.5; }
@@ -644,36 +683,28 @@ const _flameFrag = `
     }
     void main(){
         float y = vUv.y;
-
-        // the whole flame sways, more toward the free tip, none at the wood
         float sway = (noise(vec2(uSeed * 7.3, y * 1.4 - uTime * 1.6)) - 0.5)
                    * 0.38 * smoothstep(0.05, 0.9, y);
         float x = vUv.x - 0.5 - sway;
 
-        // domain-warped upward-scrolling turbulence
         vec2  q = vec2(x * 3.2 + uSeed, y * 2.1 - uTime * 2.5);
         float w = fbm(q + vec2(0.0, -uTime * 0.7) + uSeed);
         float n = fbm(q + 1.7 * vec2(w, w * 0.6));
 
-        // teardrop body: wide at the base, pinched hard at the tip so licks
-        // detach into separate tongues instead of one blunt column
         float d = abs(x) * mix(2.4, 6.0, y * y);
         float flame = 1.0 - d - y * 0.55 + (n - 0.5) * 1.15;
         flame = clamp(flame, 0.0, 1.0);
-        flame *= smoothstep(0.0, 0.10, y);    // soft foot at the wood
-        flame *= smoothstep(1.05, 0.45, y);   // fade the tip out
+        flame *= smoothstep(0.0, 0.10, y);    
+        flame *= smoothstep(1.05, 0.45, y);   
         if (flame < 0.02) discard;
 
-        // white-hot heart low in the flame, independent of the licky body,
-        // so the base always reads hot even when a tongue breaks away above
         float core = clamp(1.0 - abs(x) * mix(5.0, 12.0, y) - y * 1.35 + (n - 0.5) * 0.35, 0.0, 1.0);
 
         vec3 col = mix(uEdge, uMid, smoothstep(0.04, 0.55, flame));
         col      = mix(col,  uCore, smoothstep(0.35, 0.85, core));
         col      = mix(col,  vec3(1.0, 0.98, 0.90), smoothstep(0.80, 1.0, core));
 
-        // brightness breathes with the same flicker driving the point light
-        gl_FragColor = vec4(col * flame * (0.72 + 0.28 * uFlick), 1.0);   // additive: brightness = shape
+        gl_FragColor = vec4(col * flame * (0.72 + 0.28 * uFlick), 1.0);  
     }`;
 const _flameWorld = new THREE.Vector3();
 function attachFlame(torch) {
@@ -1043,7 +1074,6 @@ const waterVertex = `
 
     #define NUM ${WAVES.length}
 
-    // --- Oar ripple constants (keep RIPPLE_LIFE in JS == R_LIFE) ---
     #define MAXR    ${MAX_RIPPLES}
     #define R_AMP   0.055   // peak height of a fresh ripple
     #define R_FREQ  15.0    // wavelength of the ring oscillation
@@ -1071,9 +1101,6 @@ const waterVertex = `
     varying vec3 vWorldPos;
     varying vec3 vNormal;
 
-    // Displacement carved by the moving boat: the hull pushes the surface down,
-    // the bow shoulders up a bulge, and a Kelvin-style V wake trails behind.
-    // Scaled by uBoatSpeed so a stationary boat leaves the water still.
     float boatWake(vec2 p) {
         vec2  rel    = p - uBoatPos;
         float along  = dot(rel, uBoatDir);              // + ahead of bow, - astern
@@ -1105,8 +1132,6 @@ const waterVertex = `
         return h * uBoatSpeed;
     }
 
-    // Single decaying, outward-expanding ring. Returns the height contribution
-    // and writes its planar gradient (for correct normals/lighting).
     float rippleHeight(vec2 p, vec2 origin, float age, out float dHdx, out float dHdy) {
         dHdx = 0.0;
         dHdy = 0.0;
@@ -1191,7 +1216,7 @@ const waterFragment = `
     #define MAXL ${MAX_WATER_LIGHTS}
 
     uniform vec3  uBaseColor;
-    uniform vec3  uDeepColor; // <-- ADD THIS LINE
+    uniform vec3  uDeepColor; 
     uniform vec3  uAmbient;
     uniform float uOpacity;
     uniform float uExposure;
@@ -1234,8 +1259,6 @@ const waterFragment = `
         return amp * cos(ph) * frq * dir;
     }
 
-    // High-frequency surface detail in z-up tangent space. These never displace
-    // geometry; they only tilt the normal so the surface shatters light into glints.
     vec3 detailNormal(vec2 p, float t) {
         vec2 g = vec2(0.0);
         g += rippleGrad(p, normalize(vec2( 0.80,  0.60)),  3.6, 1.0, 0.016, t);
@@ -1259,17 +1282,10 @@ const waterFragment = `
         vec3 V = normalize(cameraPosition - vWorldPos);
         vec3 R = reflect(-V, N);                 // mirror direction for glints
 
-        // --- NEW OMBRE MATH ---
-        // Mix from Deep Teal to Bright Cyan based on the Y-coordinate.
-        // -8.0 is deep inside the cave, 2.0 is near the entrance.
         vec3 ombreColor = mix(uDeepColor, uBaseColor, smoothstep(-8.0, 2.0, vWorldPos.y));
         
         vec3 color = ombreColor * uAmbient;
 
-        // All the torch lights live INSIDE the cave, but this loop has no
-        // occlusion -- without a mask it lights water OUTSIDE the mouth
-        // straight through the rock walls. Fade their contribution to zero
-        // across the entrance cut (y ~4) so no light bleeds past the cave.
         float caveMask = 1.0 - smoothstep(3.0, 4.2, vWorldPos.y);
 
         for (int i = 0; i < MAXL; i++) {
@@ -1292,38 +1308,29 @@ const waterFragment = `
             color += uLightColor[i] * atten * glint * 3.0 * uSpecStrength;
         }
 
-        // Schlick fresnel for water (F0 ~ 0.02): grazing angles turn mirror-like.
         float fres = 0.02 + 0.98 * pow(1.0 - max(dot(N, V), 0.0), 5.0);
         color += uSkyColor * fres * uReflectivity;               // reflective sheen
 
-        // ---- Moon glade: true specular reflection of the moon ----
-        // Because it uses the same wave + detail normals as everything else,
-        // the glade stretches toward the viewer, wobbles with the swell and
-        // shatters into twinkling glints instead of reading as a flat decal.
         float gladeAlpha = 0.0;
-        // Keep it out of the cave interior (rock would occlude the sky).
         float moonMask = smoothstep(0.0, 3.0, vWorldPos.y);
         if (uMoonGlade > 0.001 && moonMask > 0.001) {
             vec3  Lm = normalize(uMoonPos - vWorldPos);
             float rl = max(dot(R, Lm), 0.0);
 
-            float body    = pow(rl, 18.0);    // wide soft path of light
-            float shimmer = pow(rl, 90.0);    // mid streaks riding the swell
-            float sparkle = pow(rl, 750.0);   // pinpoint glitter
+            float body    = pow(rl, 18.0);    
+            float shimmer = pow(rl, 90.0);    
+            float sparkle = pow(rl, 750.0);   
 
-            // Cheap per-spot flicker so sparkles twinkle out of sync.
             float tw = 0.7 + 0.3 * sin(uTime * 4.0
                                        + vWorldPos.x * 37.0
                                        + vWorldPos.y * 23.0);
 
-            // Water reflects more at grazing angles, so weight by fresnel.
             float mf = 0.2 + 0.8 * clamp(fres * 6.0, 0.0, 1.0);
 
             vec3 glade = uMoonColor
                        * (body * 0.25 + shimmer * 0.9 + sparkle * 5.0 * tw)
                        * mf * uMoonGlade * 2.0 * moonMask;
             color += glade;
-            // Let the bright path read solid instead of see-through.
             gladeAlpha = clamp((body * 0.35 + shimmer * 0.5) * uMoonGlade * mf, 0.0, 0.4);
         }
 
@@ -1343,8 +1350,6 @@ const waterFragment = `
         color = acesFilmic(color * uExposure);
         color = linearToSRGB(color);
 
-        // Grazing angles read a touch more solid/reflective, but never fully opaque
-        // so the water keeps some translucency and feels fluid rather than dense.
         float alpha = mix(uOpacity, min(uOpacity + 0.22, 0.92), fres);
         gl_FragColor = vec4(color, clamp(alpha + foam * 0.5 + gladeAlpha, 0.0, 1.0));
     }
@@ -1772,8 +1777,8 @@ const edgeFogFrag = `
     uniform float uTime;
     uniform float uAlpha;
     uniform float uMul;
-    uniform float uFacing; // view-angle cross-fade, set per frame in JS
-    uniform float uCross;  // 1 on sheets that run along the bank's depth
+    uniform float uFacing; 
+    uniform float uCross;  
     uniform vec3  uColor;
     varying vec3  vWorldPos;
 
@@ -1791,19 +1796,11 @@ const edgeFogFrag = `
     }
 
     void main(){
-        // World-space sample; the density field is anchored to the world, so
-        // the sheets can swivel to face the camera without the pattern moving.
-        // Second component is height, with a slow upward roll.
-        // The y-term in BOTH components keeps the pattern 2D on every sheet
-        // orientation (on horizontal sheets z is constant, so without it the
-        // noise would collapse into 1D diagonal stripes).
         vec2 p = vec2(vWorldPos.x * 0.28 + vWorldPos.y * 1.7,
                       vWorldPos.z * 0.55 + vWorldPos.y * 0.31 - uTime * 0.018);
         vec2 d1 = vec2( uTime * 0.045, uTime * 0.012);
         vec2 d2 = vec2(-uTime * 0.030, uTime * 0.020);
 
-        // Low-frequency warp field bends the fbm into curling, cauliflower
-        // billows instead of flat streaks.
         float w  = efFbm(p * 1.35 + d1 * 2.0);
         vec2 wp2 = p + (w - 0.5) * 1.1;
 
@@ -1813,15 +1810,9 @@ const edgeFogFrag = `
         float density = smoothstep(0.20, 0.82, billow);
         density = mix(0.42, 1.0, density);   // it's a bank, not puffs -- never open a full hole
 
-        // Cheap self-shading: sample the same field a little higher up
-        // (reusing the warp). Denser-than-above reads as a moonlit billow
-        // top, thinner as a shaded crevice -- gives the bank 3D relief.
         float nUp    = efFbm(wp2 + vec2(0.06, 0.44) + d1);
         float relief = clamp((n1 - nUp) * 2.8, -0.45, 0.9);
 
-        // Soft edges: meets the water at the bottom, and instead of a flat
-        // top fade, the skyline is carved by the same noise so the bank
-        // reads as rolling cloud tops against the dark.
         float top  = 3.2 + billow * 3.0;
         float fade = smoothstep(-1.35, -0.45, vWorldPos.z)
                    * (1.0 - smoothstep(top - 1.6, top, vWorldPos.z))
@@ -1830,12 +1821,8 @@ const edgeFogFrag = `
         float camFade = smoothstep(0.4, 2.6, distance(cameraPosition, vWorldPos));
 
         float alpha = uAlpha * uMul * uFacing * density * fade * camFade;
-        // Depth ramp for cross sheets: thin at the bank's front edge (~y 8),
-        // full further in -- mirrors the front layers' alpha ramp and keeps
-        // the fog pinned to the edge of the world.
         alpha *= mix(1.0, smoothstep(8.0, 15.0, vWorldPos.y), uCross);
         if (alpha < 0.004) discard;
-        // dense billows catch light on their tops, crevices fall into shadow
         gl_FragColor = vec4(uColor * (0.5 + density * 0.9 + relief * 0.85), alpha);
     }`;
 
